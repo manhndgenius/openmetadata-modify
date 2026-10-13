@@ -9,10 +9,9 @@
 1. [Khởi tạo môi trường & Xử lý lỗi nền tảng](#1-khởi-tạo-môi-trường--xử-lý-lỗi-nền-tảng)
 2. [Chiến lược tích hợp kiến trúc (Phương án 2 - Giai đoạn 1)](#2-chiến-lược-tích-hợp-kiến-trúc)
 3. [Xây dựng phân hệ Data Quality Rule Recommender](#3-xây-dựng-phân-hệ-data-quality-rule-recommender)
-4. [Tối ưu hóa UI/UX & Đồng bộ nhận diện OpenMetadata](#4-tối-ưu-hóa-uiux--đồng-bộ-nhận-diện-openmetadata)
-5. [Tích hợp chiều sâu: Publish trực tiếp vào OpenMetadata Test Cases](#5-tích-hợp-chiều-sâu-publish-trực-tiếp-vào-openmetadata-test-cases)
-6. [Quản trị mã nguồn & Đẩy lên GitHub Repository](#6-quản-trị-mã-nguồn--đẩy-lên-github-repository)
-7. [Bảng danh mục các file đã chỉnh sửa & tạo mới](#7-bảng-danh-mục-các-file-đã-chỉnh-sửa--tạo-mới)
+4. [Tích hợp chiều sâu: Publish trực tiếp vào OpenMetadata Test Cases](#4-tích-hợp-chiều-sâu-publish-trực-tiếp-vào-openmetadata-test-cases)
+5. [Quản trị mã nguồn & Đẩy lên GitHub Repository](#5-quản-trị-mã-nguồn--đẩy-lên-github-repository)
+6. [Bảng danh mục các file đã chỉnh sửa & tạo mới](#6-bảng-danh-mục-các-file-đã-chỉnh-sửa--tạo-mới)
 
 ---
 
@@ -81,25 +80,12 @@ Tạo mới `RuleRecommenderPage.tsx` và `rule-recommender.style.less`:
 
 ---
 
-## 4. Tối ưu hóa UI/UX & Đồng bộ nhận diện OpenMetadata
+## 4. Tích hợp chiều sâu: Publish trực tiếp vào OpenMetadata Test Cases
 
-Dựa trên phản hồi người dùng, giao diện đã được tinh gọn và đồng bộ:
-1. **Màu nền Card Header:** Chuyển đổi nền gradient sang nền trắng `#ffffff` phẳng, đồng bộ hoàn toàn với tông màu chung của các trang trong OpenMetadata.
-2. **Lược bỏ biểu tượng thừa:**
-   - Xóa bỏ icon tên lửa (rocket), icon nút chạy (play), icon upload.
-   - Xóa bỏ huy hiệu phiên bản `AI Powered v1.0`.
-   - Giữ lại duy nhất icon cấu hình `<SettingOutlined />` để mở modal tùy biến Endpoint API.
-3. **Đổi tên nút bấm hành động:**
-   - Đổi tên từ `Publish to OpenMetadata ({count})` thành **`Publish ({count})`** (hoặc `Publish` khi chưa duyệt rule nào).
-
----
-
-## 5. Tích hợp chiều sâu: Publish trực tiếp vào OpenMetadata Test Cases
-
-### 5.1. Vấn đề trước đây
+### 4.1. Vấn đề trước đây
 Trước đó, nút Publish chỉ gọi sang endpoint API bên ngoài mà chưa ghi vào cơ sở dữ liệu của OpenMetadata, khiến người dùng vào bảng không thấy rule xuất hiện.
 
-### 5.2. Giải pháp tích hợp trực tiếp
+### 4.2. Giải pháp tích hợp trực tiếp
 Nâng cấp hàm `publishRules` trong `ruleRecommenderAPI.ts`:
 - Khi người dùng bấm **Publish**, hệ thống duyệt qua danh sách các rule đã **Accepted** và chuyển đổi thành payload `CreateTestCase` chuẩn:
   - Tự động map loại rule sang OpenMetadata Test Definition:
@@ -117,21 +103,21 @@ Nâng cấp hàm `publishRules` trong `ruleRecommenderAPI.ts`:
 - Gửi trực tiếp qua `axiosClient.put('/dataQuality/testCases', payload)` sử dụng phiên đăng nhập và token hiện tại của người dùng.
 - OpenMetadata tự động liên kết các test case này vào **Test Suite** tương ứng của Table (`<tableFqn>.testSuite`).
 
-### 5.3. Trải nghiệm xem Rule trong Table
+### 4.3. Trải nghiệm xem Rule trong Table
 Bổ sung các điểm kết nối giúp người dùng kiểm tra ngay kết quả:
 - **Thông báo thành công:** Popup chứa nút bấm màu xanh **`Xem trong Bảng ({Tên bảng})`** chuyển hướng người dùng ngay lập tức tới tab Profiler & Data Quality (`/table/:tableFqn/profiler/data-quality`).
 - **Liên kết tiện lợi trên card chọn bảng:** Nút bấm **`Xem Data Quality của bảng ({Tên bảng})`** nằm ngay bên dưới ô chọn bảng để mở xem bất kỳ lúc nào.
 
 ---
 
-## 6. Quản trị mã nguồn & Đẩy lên GitHub Repository
+## 5. Quản trị mã nguồn & Đẩy lên GitHub Repository
 
-### 6.1. Xử lý giới hạn Shallow Clone
+### 5.1. Xử lý giới hạn Shallow Clone
 - Repository cục bộ ban đầu được clone dạng shallow (`git rev-parse --is-shallow-repository` = `true`), chỉ có 1 commit lịch sử gần nhất.
 - Khi đẩy lên một repository rỗng mới trên GitHub, máy chủ GitHub từ chối do thiếu các commit/blob tổ tiên.
 - **Giải pháp:** Tạo một commit gốc hoàn chỉnh (root orphan commit) chứa **100% toàn bộ source code của toàn dự án OpenMetadata** cùng tất cả các tính năng đã phát triển.
 
-### 6.2. Cấu hình Remote & Đẩy code
+### 5.2. Cấu hình Remote & Đẩy code
 - Cấu hình remote `origin` trỏ về repository của bạn:
   ```bash
   origin   https://github.com/manhndgenius/openmetadata-modify.git (fetch/push)
@@ -142,7 +128,7 @@ Bổ sung các điểm kết nối giúp người dùng kiểm tra ngay kết qu
 
 ---
 
-## 7. Bảng danh mục các file đã chỉnh sửa & tạo mới
+## 6. Bảng danh mục các file đã chỉnh sửa & tạo mới
 
 | STT | Đường dẫn file | Thao tác | Mô tả nội dung |
 | :---: | :--- | :---: | :--- |
