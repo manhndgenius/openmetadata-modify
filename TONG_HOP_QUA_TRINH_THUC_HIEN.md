@@ -10,8 +10,7 @@
 2. [Chiến lược tích hợp kiến trúc (Phương án 2 - Giai đoạn 1)](#2-chiến-lược-tích-hợp-kiến-trúc)
 3. [Xây dựng phân hệ Data Quality Rule Recommender](#3-xây-dựng-phân-hệ-data-quality-rule-recommender)
 4. [Tích hợp chiều sâu: Publish trực tiếp vào OpenMetadata Test Cases](#4-tích-hợp-chiều-sâu-publish-trực-tiếp-vào-openmetadata-test-cases)
-5. [Quản trị mã nguồn & Đẩy lên GitHub Repository](#5-quản-trị-mã-nguồn--đẩy-lên-github-repository)
-6. [Bảng danh mục các file đã chỉnh sửa & tạo mới](#6-bảng-danh-mục-các-file-đã-chỉnh-sửa--tạo-mới)
+5. [Bảng danh mục các file đã chỉnh sửa & tạo mới](#5-bảng-danh-mục-các-file-đã-chỉnh-sửa--tạo-mới)
 
 ---
 
@@ -110,25 +109,7 @@ Bổ sung các điểm kết nối giúp người dùng kiểm tra ngay kết qu
 
 ---
 
-## 5. Quản trị mã nguồn & Đẩy lên GitHub Repository
-
-### 5.1. Xử lý giới hạn Shallow Clone
-- Repository cục bộ ban đầu được clone dạng shallow (`git rev-parse --is-shallow-repository` = `true`), chỉ có 1 commit lịch sử gần nhất.
-- Khi đẩy lên một repository rỗng mới trên GitHub, máy chủ GitHub từ chối do thiếu các commit/blob tổ tiên.
-- **Giải pháp:** Tạo một commit gốc hoàn chỉnh (root orphan commit) chứa **100% toàn bộ source code của toàn dự án OpenMetadata** cùng tất cả các tính năng đã phát triển.
-
-### 5.2. Cấu hình Remote & Đẩy code
-- Cấu hình remote `origin` trỏ về repository của bạn:
-  ```bash
-  origin   https://github.com/manhndgenius/openmetadata-modify.git (fetch/push)
-  upstream https://github.com/open-metadata/OpenMetadata.git (fetch/push)
-  ```
-- Đẩy thành công toàn bộ mã nguồn lên nhánh **`main`**.
-- Xóa nhánh phụ `1.12.6` ở cả máy cục bộ và GitHub theo yêu cầu, giữ duy nhất nhánh **`main`** làm nhánh mặc định sạch sẽ.
-
----
-
-## 6. Bảng danh mục các file đã chỉnh sửa & tạo mới
+## 5. Bảng danh mục các file đã chỉnh sửa & tạo mới
 
 | STT | Đường dẫn file | Thao tác | Mô tả nội dung |
 | :---: | :--- | :---: | :--- |
@@ -148,4 +129,4 @@ Bổ sung các điểm kết nối giúp người dùng kiểm tra ngay kết qu
 - ✅ Toàn bộ mã nguồn chạy ổn định trên môi trường Windows (`Vite Dev Server :3000` + `OpenMetadata Server :8585`).
 - ✅ Giao diện **Data Quality Rule Recommender** hoạt động mượt mà, chuẩn UI OpenMetadata.
 - ✅ Khi duyệt rule và bấm **Publish**, rule được ghi trực tiếp thành **OpenMetadata Test Case** và xem được ngay tại tab **Profiler & Data Quality** của bảng.
-- ✅ Toàn bộ dự án đã được đẩy lên GitHub tại **[https://github.com/manhndgenius/openmetadata-modify](https://github.com/manhndgenius/openmetadata-modify)** (nhánh `main`).
+- ✅ Toàn bộ dự án đã được đồng bộ lên GitHub tại **[https://github.com/manhndgenius/openmetadata-modify](https://github.com/manhndgenius/openmetadata-modify)** (nhánh `main`).
