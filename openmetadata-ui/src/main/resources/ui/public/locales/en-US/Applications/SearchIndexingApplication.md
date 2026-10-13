@@ -1,0 +1,111 @@
+# Search Indexing Application
+
+This schema defines configuration for Search Reindexing Application.
+
+$$section
+### Batch Size $(id="batchSize")
+
+Maximum number of events entities in a batch (Default 100).
+
+$$
+
+$$section
+### Payload Size $(id="payLoadSize")
+
+Maximum number of events entities in a batch (Default 100).
+
+$$
+
+$$section
+### Number of Producer Threads $(id="producerThreads")
+
+Number of threads to use for reindexing
+
+$$
+
+$$section
+### Number of Consumer Threads $(id="consumerThreads")
+
+Number of threads to use for reindexing
+
+$$
+
+$$section
+### Queue Size to use. $(id="queueSize")
+
+Queue Size to use internally for reindexing.
+
+$$
+
+$$section
+### Max Concurrent Requests $(id="maxConcurrentRequests")
+
+Maximum number of concurrent requests to the search index
+
+$$
+
+$$section
+### Max Retries $(id="maxRetries")
+
+Maximum number of retries for a failed request
+
+$$
+
+$$section
+### Initial Backoff Millis $(id="initialBackoff")
+
+Initial backoff time in milliseconds
+
+$$
+
+$$section
+### Max Backoff Millis $(id="maxBackoff")
+
+Maximum backoff time in milliseconds
+
+$$
+
+$$section
+### entities $(id="entities")
+
+$$
+
+$$section
+### Recreate Indexes $(id="recreateIndex")
+
+$$
+
+$$section
+### Search Index Language $(id="searchIndexMappingLanguage")
+
+Recreate Indexes with updated Language
+
+$$
+
+$$section
+### Auto Tune $(id="autoTune")
+
+Enable automatic performance tuning based on cluster capabilities and database entity count
+
+$$
+
+$$section
+### Use Distributed Indexing $(id="useDistributedIndexing")
+
+Enable distributed indexing to scale reindexing across multiple servers with fault tolerance and parallel processing
+
+$$
+
+$$section
+### Partition Size $(id="partitionSize")
+
+Number of entities per partition for distributed indexing. Smaller values create more partitions for better distribution across servers. Range: 1000-50000.
+
+$$
+
+$$section
+### Time Series Max Days $(id="timeSeriesMaxDays")
+
+Maximum age in days for time series data during reindexing. Default 0 (index all data). Set to a positive value like 15 to limit to recent data only.
+
+$$

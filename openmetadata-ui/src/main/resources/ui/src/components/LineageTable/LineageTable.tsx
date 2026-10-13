@@ -1,0 +1,988 @@
+/*
+ *  Copyright 2025 Collate.
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+import Button from '@mui/material/Button';
+import Chip from '@mui/material/Chip';
+import MenuItem from '@mui/material/MenuItem';
+import ToggleButton from '@mui/material/ToggleButton';
+import { ColumnsType } from 'antd/es/table';
+import Card from 'antd/lib/card/Card';
+import { AxiosError } from 'axios';
+import classNames from 'classnames';
+import { isEmpty, map, sortBy } from 'lodash';
+import QueryString from 'qs';
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { ReactComponent as DropdownIcon } from '../../assets/svg/drop-down.svg';
+import { ReactComponent as TrendDownIcon } from '../../assets/svg/ic-trend-down.svg';
+import { getLineageDropdownItems } from '../../constants/AdvancedSearch.constants';
+import {
+  FULLSCREEN_QUERY_PARAM_KEY,
+  NO_DATA,
+  PAGE_SIZE_BASE,
+  PAGE_SIZE_LARGE,
+  PAGE_SIZE_MEDIUM,
+} from '../../constants/constants';
+import {
+  IMPACT_ANALYSIS_DEFAULT_VISIBLE_COLUMNS,
+  IMPACT_ANALYSIS_STATIC_COLUMNS,
+} from '../../constants/Lineage.constants';
+import { useLineageProvider } from '../../context/LineageProvider/LineageProvider';
+import { EntityFields } from '../../enums/AdvancedSearch.enum';
+import { SIZE } from '../../enums/common.enum';
+import { EntityType } from '../../enums/entity.enum';
+import { LineageDirection } from '../../generated/api/lineage/lineageDirection';
+import { EntityReference } from '../../generated/tests/testCase';
+import { Paging } from '../../generated/type/paging';
+import { TagLabel, TagSource } from '../../generated/type/tagLabel';
+import { usePaging } from '../../hooks/paging/usePaging';
+import { useFqn } from '../../hooks/useFqn';
+import { useLineageStore } from '../../hooks/useLineageStore';
+import { SearchSourceAlias } from '../../interface/search.interface';
+import { QueryFieldInterface } from '../../pages/ExplorePage/ExplorePage.interface';
+import {
+  getLineageByEntityCount,
+  getLineageDataByFQN,
+} from '../../rest/lineageAPI';
+import { Transi18next } from '../../utils/CommonUtils';
+import {
+  getEntityLinkFromType,
+  getEntityName,
+  highlightSearchText,
+} from '../../utils/EntityUtils';
+import { getQuickFilterQuery } from '../../utils/ExploreUtils';
+import Fqn from '../../utils/Fqn';
+import {
+  getSearchNameEsQuery,
+  LINEAGE_IMPACT_OPTIONS,
+  prepareDownstreamColumnLevelNodesFromDownstreamEdges,
+  prepareUpstreamColumnLevelNodesFromUpstreamEdges,
+} from '../../utils/Lineage/LineageUtils';
+import { stringToHTML } from '../../utils/StringsUtils';
+import { showErrorToast } from '../../utils/ToastUtils';
+import { useRequiredParams } from '../../utils/useRequiredParams';
+import { DomainLabel } from '../common/DomainLabel/DomainLabel.component';
+import NoDataPlaceholder from '../common/ErrorWithPlaceholder/NoDataPlaceholder';
+import { PagingHandlerParams } from '../common/NextPrevious/NextPrevious.interface';
+import { OwnerLabel } from '../common/OwnerLabel/OwnerLabel.component';
+import EntityPopOverCard from '../common/PopOverCard/EntityPopOverCard';
+import Table from '../common/Table/Table';
+import TierTag from '../common/TierTag';
+import TableTags from '../Database/TableTags/TableTags.component';
+import CustomControlsComponent from '../Entity/EntityLineage/CustomControls.component';
+import {
+  EdgeFromToData,
+  LineageNode,
+  LineageNodeType,
+} from '../Lineage/Lineage.interface';
+import {
+  SearchedDataProps,
+  SourceType,
+} from '../SearchedData/SearchedData.interface';
+import { EImpactLevel } from './LineageTable.interface';
+import { StyledMenu, StyledToggleButtonGroup } from './LineageTable.styled';
+import { useLineageTableState } from './useLineageTableState';
+
+const LineageTable: FC<{ entity: SourceType }> = ({ entity }) => {
+  const { selectedQuickFilters, setSelectedQuickFilters, updateEntityData } =
+    useLineageProvider();
+
+  const { lineageConfig } = useLineageStore();
+  const { fqn } = useFqn();
+  const { entityType } = useRequiredParams<{ entityType: EntityType }>();
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Use the custom hook for state management
+  const {
+    filterNodes,
+    loading,
+    searchValue,
+    impactLevel,
+    upstreamColumnLineageNodes,
+    downstreamColumnLineageNodes,
+    lineagePagingInfo,
+    setFilterNodes,
+    setLoading,
+    setSearchValue,
+    setImpactLevel: setSelectedImpactLevel,
+    setColumnLineageNodes,
+    setLineagePagingInfo,
+  } = useLineageTableState();
+  const {
+    currentPage,
+    pageSize,
+    paging,
+    showPagination,
+    handlePageChange,
+    handlePagingChange,
+    handlePageSizeChange,
+  } = usePaging(PAGE_SIZE_LARGE);
+
+  const [impactOnEl, setImpactOnEl] = useState<null | HTMLElement>(null);
+  const paginationInfoKeyRef = useRef<string | null>(null);
+
+  const { isFullScreen, nodeDepth, lineageDirection } = useMemo(() => {
+    const queryParams = QueryString.parse(location.search, {
+      ignoreQueryPrefix: true,
+    });
+
+    const lineageDirection =
+      queryParams['dir'] === LineageDirection.Upstream
+        ? LineageDirection.Upstream
+        : LineageDirection.Downstream;
+
+    const directionalDepth =
+      lineageDirection === LineageDirection.Downstream
+        ? lineageConfig.downstreamDepth
+        : lineageConfig.upstreamDepth;
+
+    const nodeDepth = Number.isNaN(Number(queryParams['depth']))
+      ? directionalDepth
+      : Number(queryParams['depth']);
+
+    return {
+      isFullScreen: queryParams[FULLSCREEN_QUERY_PARAM_KEY] === 'true',
+      nodeDepth,
+      lineageDirection,
+    };
+  }, [
+    location.search,
+    lineageConfig.upstreamDepth,
+    lineageConfig.downstreamDepth,
+  ]);
+
+  const updateURLParams = useCallback(
+    (
+      data: Partial<{
+        dir: LineageDirection;
+        depth: number;
+        [FULLSCREEN_QUERY_PARAM_KEY]: boolean;
+      }>
+    ) => {
+      const params = QueryString.parse(location.search, {
+        ignoreQueryPrefix: true,
+      });
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== undefined) {
+          params[key] = String(value);
+        }
+      }
+
+      navigate(
+        {
+          search: QueryString.stringify(params, {
+            encode: false,
+            addQueryPrefix: true,
+          }),
+        },
+        { replace: true }
+      );
+    },
+    [location.search, navigate]
+  );
+
+  const clearQuickFilterValues = useCallback(() => {
+    setSelectedQuickFilters((prev) =>
+      (prev ?? []).map((filter) => ({ ...filter, value: [] }))
+    );
+  }, [setSelectedQuickFilters]);
+
+  const { upstreamCount, downstreamCount, pagingTotal } = useMemo(() => {
+    if (impactLevel === EImpactLevel.ColumnLevel) {
+      return {
+        upstreamCount: upstreamColumnLineageNodes.length,
+        downstreamCount: downstreamColumnLineageNodes.length,
+        pagingTotal:
+          lineageDirection === LineageDirection.Upstream
+            ? upstreamColumnLineageNodes.length
+            : downstreamColumnLineageNodes.length,
+      };
+    }
+
+    const upstreamCount =
+      lineagePagingInfo?.upstreamDepthInfo.reduce((acc, record) => {
+        // No need to count depth 0 nodes as they are not shown in the table
+        // Need count till nodeDepth - 1 as depth 0 nodes are not shown in the table
+        if (record.depth > nodeDepth || record.depth === 0) {
+          return acc;
+        }
+        acc += record.entityCount;
+
+        return acc;
+      }, 0) ?? 0;
+    const downstreamCount =
+      lineagePagingInfo?.downstreamDepthInfo.reduce((acc, record) => {
+        // No need to count depth 0 nodes as they are not shown in the table
+        // Need count till nodeDepth - 1 as depth 0 nodes are not shown in the table
+        if (record.depth > nodeDepth || record.depth === 0) {
+          return acc;
+        }
+        acc += record.entityCount;
+
+        return acc;
+      }, 0) ?? 0;
+
+    return {
+      upstreamCount,
+      downstreamCount,
+      pagingTotal:
+        lineageDirection === LineageDirection.Downstream
+          ? downstreamCount
+          : upstreamCount,
+    };
+  }, [
+    lineagePagingInfo,
+    nodeDepth,
+    impactLevel,
+    upstreamColumnLineageNodes,
+    downstreamColumnLineageNodes,
+    lineageDirection,
+  ]);
+
+  useEffect(() => {
+    handlePagingChange({ total: pagingTotal } as Paging);
+  }, [handlePagingChange, pagingTotal]);
+
+  const radioGroupOptions = useMemo(() => {
+    return [
+      {
+        label: (
+          <>
+            {t('label.upstream')}{' '}
+            {lineageDirection === LineageDirection.Upstream && (
+              <Chip label={upstreamCount} size="small" variant="outlined" />
+            )}
+          </>
+        ),
+        value: LineageDirection.Upstream,
+      },
+      {
+        label: (
+          <>
+            {t('label.downstream')}{' '}
+            {lineageDirection === LineageDirection.Downstream && (
+              <Chip label={downstreamCount} size="small" variant="outlined" />
+            )}
+          </>
+        ),
+        value: LineageDirection.Downstream,
+      },
+    ];
+  }, [t, upstreamCount, downstreamCount, lineageDirection]);
+
+  const streamButtonGroup = useMemo(() => {
+    return (
+      <StyledToggleButtonGroup
+        exclusive
+        size="small"
+        value={lineageDirection}
+        onChange={(_, value) => {
+          handlePageChange(1);
+          updateURLParams({ dir: value });
+        }}
+      >
+        {radioGroupOptions.map((option) => (
+          <ToggleButton
+            className="font-semibold"
+            key={option.value}
+            value={option.value}
+          >
+            {option.label}
+          </ToggleButton>
+        ))}
+      </StyledToggleButtonGroup>
+    );
+  }, [handlePageChange, lineageDirection, radioGroupOptions, updateURLParams]);
+
+  // Column-level filter keys used for column_filter post-processing
+  // On Table-level: only COLUMN goes to column_filter (for Column dropdown in post-processing)
+  // On Column-level: COLUMN, TAG, GLOSSARY_TERMS all go to column_filter (filter columns)
+  const columnLevelFilterKeys = useMemo(() => {
+    if (impactLevel === EImpactLevel.ColumnLevel) {
+      return [
+        EntityFields.COLUMN,
+        EntityFields.TAG,
+        EntityFields.GLOSSARY_TERMS,
+      ];
+    }
+
+    // Table-level: only Column dropdown is a column filter
+    return [EntityFields.COLUMN];
+  }, [impactLevel]);
+
+  // Query filter for table-level filtering (filters tables/nodes)
+  // For Table-level: includes search value + table-level filters
+  // For Column-level: only table-level filters (search goes to column_filter)
+  const queryFilter = useMemo(() => {
+    // Filter out column-level filters - they go to column_filter
+    const tableLevelFilters = selectedQuickFilters.filter(
+      (filter) => !columnLevelFilterKeys.includes(filter.key as EntityFields)
+    );
+
+    const quickFilterQuery = getQuickFilterQuery(tableLevelFilters);
+    const mustClauses: QueryFieldInterface[] = [];
+
+    // Add table-level filter conditions (e.g., service, domain, tier, owner)
+    if (quickFilterQuery?.query?.bool?.must) {
+      mustClauses.push(...quickFilterQuery.query.bool.must);
+    }
+
+    // Add search value for table name search ONLY in Table-level mode
+    if (searchValue && impactLevel === EImpactLevel.TableLevel) {
+      mustClauses.push(getSearchNameEsQuery(searchValue));
+    }
+
+    // Build final query only if we have conditions
+    const query =
+      mustClauses.length > 0
+        ? { query: { bool: { must: mustClauses } } }
+        : undefined;
+
+    return JSON.stringify(query);
+  }, [selectedQuickFilters, searchValue, impactLevel, columnLevelFilterKeys]);
+
+  // Column filter for column-level filtering (filters edges by column)
+  // For Column-level: search value + column filters (Column, Tag, Glossary)
+  // Format: "columnName:val1,columnName:val2,tag:PII,glossary:Term"
+  const columnFilterValue = useMemo(() => {
+    const filters: string[] = [];
+
+    // Skip column specific filter when in Table mode
+    if (impactLevel === EImpactLevel.TableLevel) {
+      return;
+    }
+
+    selectedQuickFilters.forEach((filter) => {
+      if (
+        columnLevelFilterKeys.includes(filter.key as EntityFields) &&
+        filter.value &&
+        filter.value.length > 0
+      ) {
+        filter.value.forEach((filterValue) => {
+          if (filter.key === EntityFields.COLUMN) {
+            filters.push(`columnName:${filterValue.key}`);
+          } else if (filter.key === EntityFields.TAG) {
+            filters.push(`tag:${filterValue.key}`);
+          } else if (filter.key === EntityFields.GLOSSARY_TERMS) {
+            filters.push(`glossary:${filterValue.key}`);
+          }
+        });
+      }
+    });
+
+    // Include search value as column name filter ONLY in Column-level mode
+    if (searchValue) {
+      filters.push(`columnName:${searchValue}`);
+    }
+
+    return filters.length > 0 ? filters.join(',') : undefined;
+  }, [impactLevel, selectedQuickFilters, searchValue, columnLevelFilterKeys]);
+
+  // Define table columns
+  const extraTableFilters = useMemo(() => {
+    return (
+      <div className="d-flex justify-between items-center w-full">
+        <div>{streamButtonGroup}</div>
+
+        <Button
+          aria-controls={impactOnEl ? 'basic-menu' : undefined}
+          aria-expanded={impactOnEl ? 'true' : undefined}
+          aria-haspopup="true"
+          endIcon={<DropdownIcon />}
+          id="impact-on-dropdown"
+          startIcon={<TrendDownIcon />}
+          sx={{
+            fontWeight: 500,
+            '& .MuiButton-endIcon': {
+              svg: {
+                height: 12,
+              },
+            },
+          }}
+          onClick={(event) => setImpactOnEl(event.currentTarget)}
+        >
+          <Transi18next
+            i18nKey="label.impact-on-area"
+            renderElement={<span className="m-l-xss text-primary" />}
+            values={{ area: t(`label.${impactLevel}`) }}
+          />
+        </Button>
+        <StyledMenu
+          anchorEl={impactOnEl}
+          open={Boolean(impactOnEl)}
+          onClose={() => setImpactOnEl(null)}
+        >
+          {LINEAGE_IMPACT_OPTIONS.map((option) => (
+            <MenuItem
+              key={option.key}
+              selected={option.key === impactLevel}
+              onClick={() => {
+                flushSync(() => {
+                  setSelectedImpactLevel(option.key);
+                });
+                clearQuickFilterValues();
+                handlePageChange(1);
+                setImpactOnEl(null);
+              }}
+            >
+              {option.icon}
+              {option.label}
+            </MenuItem>
+          ))}
+        </StyledMenu>
+      </div>
+    );
+  }, [
+    clearQuickFilterValues,
+    handlePageChange,
+    impactLevel,
+    impactOnEl,
+    setSelectedImpactLevel,
+    streamButtonGroup,
+  ]);
+
+  // Function to fetch nodes based on current filters and pagination
+  const fetchNodes = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      if (impactLevel === EImpactLevel.ColumnLevel) {
+        const columnLevelConfig = {
+          ...lineageConfig,
+          upstreamDepth:
+            lineageDirection === LineageDirection.Upstream ? nodeDepth : 0,
+          downstreamDepth:
+            lineageDirection === LineageDirection.Downstream ? nodeDepth : 0,
+        };
+
+        const res = await getLineageDataByFQN({
+          fqn,
+          entityType,
+          config: columnLevelConfig,
+          queryFilter,
+          columnFilter: columnFilterValue,
+          direction: lineageDirection,
+        });
+
+        const upstreamEdges = map(res.upstreamEdges ?? [], (edge) => edge);
+        const downstreamEdges = map(res.downstreamEdges ?? [], (edge) => edge);
+        if (res.nodes) {
+          const upstreamNodes =
+            prepareUpstreamColumnLevelNodesFromUpstreamEdges(
+              upstreamEdges,
+              res.nodes as unknown as Record<string, LineageNodeType>
+            );
+
+          const downstreamNodes =
+            prepareDownstreamColumnLevelNodesFromDownstreamEdges(
+              downstreamEdges,
+              res.nodes as unknown as Record<string, LineageNodeType>
+            );
+
+          setColumnLineageNodes(upstreamNodes, downstreamNodes);
+          handlePagingChange({
+            total:
+              lineageDirection === LineageDirection.Upstream
+                ? upstreamNodes.length
+                : downstreamNodes.length,
+          } as Paging);
+        }
+      } else {
+        const paginationInfoKey = JSON.stringify({
+          fqn,
+          entityType,
+          upstreamDepth: lineageConfig.upstreamDepth,
+          downstreamDepth: lineageConfig.downstreamDepth,
+          queryFilter,
+          lineageDirection,
+          columnFilterValue,
+        });
+        const shouldIncludePaginationInfo =
+          paginationInfoKeyRef.current !== paginationInfoKey;
+
+        const res = await getLineageByEntityCount({
+          fqn: fqn ?? '',
+          entityType: entityType ?? '',
+          direction: lineageDirection,
+          nodeDepth,
+          maxDepth: nodeDepth,
+          upstreamDepth: lineageConfig.upstreamDepth,
+          downstreamDepth: lineageConfig.downstreamDepth,
+          from: (currentPage - 1) * pageSize,
+          size: pageSize,
+          query_filter: queryFilter,
+          column_filter: columnFilterValue,
+          include_pagination_info: shouldIncludePaginationInfo,
+        });
+
+        delete res.nodes[fqn];
+        if (shouldIncludePaginationInfo) {
+          setLineagePagingInfo(res.paginationInfo ?? null);
+          paginationInfoKeyRef.current = res.paginationInfo
+            ? paginationInfoKey
+            : null;
+        }
+
+        setFilterNodes(
+          sortBy(
+            map(
+              res.nodes,
+              ({ entity, paging, nodeDepth }) =>
+                ({
+                  ...entity,
+                  ...paging,
+                  nodeDepth,
+                } as unknown as LineageNode)
+            ),
+            'nodeDepth'
+          )
+        );
+      }
+    } catch (error) {
+      showErrorToast(error as AxiosError);
+      setFilterNodes([]);
+      setColumnLineageNodes([], []);
+      if (impactLevel === EImpactLevel.TableLevel) {
+        paginationInfoKeyRef.current = null;
+        setLineagePagingInfo(null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    lineageDirection,
+    queryFilter,
+    entityType,
+    fqn,
+    nodeDepth,
+    currentPage,
+    pageSize,
+    impactLevel,
+    lineageConfig,
+    columnFilterValue,
+  ]);
+
+  // Table-level lineage: fetch on all dependencies
+  useEffect(() => {
+    void fetchNodes();
+  }, [fetchNodes, impactLevel]);
+
+  useEffect(() => {
+    updateEntityData(entityType, entity, false);
+  }, [entityType, entity]);
+
+  // Sync node depth with lineageConfig
+  useEffect(() => {
+    updateURLParams({
+      depth:
+        lineageDirection === LineageDirection.Upstream
+          ? lineageConfig.upstreamDepth
+          : lineageConfig.downstreamDepth,
+    });
+  }, [
+    lineageConfig.downstreamDepth,
+    lineageConfig.upstreamDepth,
+    lineageDirection,
+    updateURLParams,
+  ]);
+
+  const nodeDepthOptions = useMemo(() => {
+    return (
+      (lineageDirection === LineageDirection.Downstream
+        ? lineagePagingInfo?.downstreamDepthInfo
+        : lineagePagingInfo?.upstreamDepthInfo) ?? []
+    ).map((info) => info.depth);
+  }, [
+    lineageDirection,
+    lineagePagingInfo?.downstreamDepthInfo,
+    lineagePagingInfo?.upstreamDepthInfo,
+  ]);
+
+  const filterNodeIds = useMemo(() => {
+    if (impactLevel === EImpactLevel.ColumnLevel) {
+      // For column-level, collect IDs from both source and impacted entities
+      const columnNodes =
+        lineageDirection === LineageDirection.Downstream
+          ? downstreamColumnLineageNodes
+          : upstreamColumnLineageNodes;
+
+      const idSet = new Set<string>();
+      columnNodes.forEach((node) => {
+        if (node.fromEntity?.id) {
+          idSet.add(node.fromEntity.id);
+        }
+        if (node.toEntity?.id) {
+          idSet.add(node.toEntity.id);
+        }
+      });
+
+      return [...idSet];
+    }
+
+    return filterNodes.map((node) => node.id ?? '');
+  }, [
+    filterNodes,
+    impactLevel,
+    lineageDirection,
+    downstreamColumnLineageNodes,
+    upstreamColumnLineageNodes,
+  ]);
+
+  // Card header with search and filter options
+  const cardHeader = useMemo(() => {
+    return (
+      <CustomControlsComponent
+        impactLevel={impactLevel}
+        nodeDepthOptions={nodeDepthOptions}
+        queryFilterNodeIds={filterNodeIds}
+        searchValue={searchValue}
+        onSearchValueChange={setSearchValue}
+      />
+    );
+  }, [
+    searchValue,
+    lineagePagingInfo,
+    nodeDepthOptions,
+    filterNodeIds,
+    impactLevel,
+  ]);
+
+  // Render function for column names with search highlighting and popover
+  const renderName = useCallback(
+    (_: string, record: SearchSourceAlias) => (
+      <EntityPopOverCard
+        entityFQN={record.fullyQualifiedName ?? ''}
+        entityType={record.entityType ?? ''}
+      >
+        <Link
+          to={getEntityLinkFromType(
+            record.fullyQualifiedName ?? '',
+            record.entityType as EntityType,
+            record
+          )}
+        >
+          {stringToHTML(
+            highlightSearchText(getEntityName(record), searchValue)
+          )}
+        </Link>
+      </EntityPopOverCard>
+    ),
+    [searchValue]
+  );
+
+  // Define columns for table-level impact analysis
+  const tableColumns: ColumnsType<SearchSourceAlias> = useMemo(
+    () => [
+      {
+        title: t('label.name'),
+        dataIndex: 'name',
+        key: 'name',
+        render: renderName,
+      },
+      {
+        title: t('label.node-depth'),
+        dataIndex: 'nodeDepth',
+        key: 'nodeDepth',
+        render: (depth: number) => (
+          // Keep a fallback to 0 if depth is NaN for any unexpected reason
+          <span>{Number.isNaN(Math.abs(depth)) ? 0 : Math.abs(depth)}</span>
+        ),
+      },
+      {
+        title: t('label.description'),
+        dataIndex: 'description',
+        key: 'description',
+        ellipsis: true,
+        render: (text: string) => <span>{isEmpty(text) ? NO_DATA : text}</span>,
+      },
+      {
+        title: t('label.domain-plural'),
+        dataIndex: 'domains',
+        key: 'domains',
+        render: (domains: EntityReference[]) => (
+          <DomainLabel
+            multiple
+            domains={domains}
+            entityFqn=""
+            entityId=""
+            entityType={entityType}
+            showDomainHeading={false}
+          />
+        ),
+      },
+      {
+        title: t('label.owner-plural'),
+        dataIndex: 'owners',
+        key: 'owners',
+        render: (owners: EntityReference[]) => (
+          <OwnerLabel isCompactView={false} owners={owners} showLabel={false} />
+        ),
+      },
+      {
+        title: t('label.tier'),
+        dataIndex: 'tier',
+        key: 'tier',
+        render: (tier: TagLabel) => {
+          if (!tier) {
+            return NO_DATA;
+          }
+
+          return <TierTag tier={tier} />;
+        },
+      },
+      {
+        title: t('label.tag-plural'),
+        dataIndex: 'tags',
+        key: 'tags',
+        render: (
+          tags: TagLabel[],
+          record: SearchedDataProps['data'][number]['_source'],
+          index: number
+        ) =>
+          isEmpty(tags) ? (
+            NO_DATA
+          ) : (
+            <TableTags
+              isReadOnly
+              newLook
+              entityFqn=""
+              entityType={record.entityType as EntityType}
+              handleTagSelection={() => Promise.resolve()}
+              hasTagEditAccess={false}
+              index={index}
+              record={record}
+              showInlineEditTagButton={false}
+              tags={tags}
+              type={TagSource.Classification}
+            />
+          ),
+      },
+      {
+        title: t('label.glossary-term-plural'),
+        dataIndex: 'tags',
+        key: 'glossary-terms',
+        render: (
+          tags: TagLabel[],
+          record: SearchedDataProps['data'][number]['_source'],
+          index: number
+        ) =>
+          isEmpty(tags) ? (
+            NO_DATA
+          ) : (
+            <TableTags
+              isReadOnly
+              newLook
+              entityFqn=""
+              entityType={record.entityType as EntityType}
+              handleTagSelection={() => Promise.resolve()}
+              hasTagEditAccess={false}
+              index={index}
+              record={record}
+              showInlineEditTagButton={false}
+              tags={tags}
+              type={TagSource.Glossary}
+            />
+          ),
+      },
+    ],
+    [t, renderName]
+  );
+
+  // Render function for column names with search highlighting
+  const columnNameRender = useCallback(
+    (column: string) => {
+      const prunedColumnName = Fqn.split(column).pop();
+
+      return (
+        <span>
+          {isEmpty(prunedColumnName)
+            ? NO_DATA
+            : stringToHTML(highlightSearchText(prunedColumnName, searchValue))}
+        </span>
+      );
+    },
+    [searchValue]
+  );
+
+  // Define columns for column-level impact analysis
+  const columnImpactColumns: ColumnsType<SourceType> = useMemo(
+    () => [
+      {
+        title: t('label.source'),
+        dataIndex: 'fromEntity',
+        key: 'fromEntity',
+        render: (record?: EdgeFromToData) => (
+          <Link
+            to={getEntityLinkFromType(
+              record?.fullyQualifiedName ?? '',
+              record?.type as EntityType
+            )}
+          >
+            {stringToHTML(
+              highlightSearchText(
+                Fqn.split(record?.fullyQualifiedName ?? '').pop(),
+                searchValue
+              )
+            )}
+          </Link>
+        ),
+      },
+      {
+        title: t('label.source-column-plural'),
+        dataIndex: ['fromColumn'],
+        key: 'fromColumn',
+        render: columnNameRender,
+      },
+      {
+        title: t('label.impacted'),
+        dataIndex: 'toEntity',
+        key: 'toEntity',
+        render: (record?: EdgeFromToData) => (
+          <Link
+            to={getEntityLinkFromType(
+              record?.fullyQualifiedName ?? '',
+              record?.type as EntityType
+            )}
+          >
+            {stringToHTML(
+              highlightSearchText(
+                Fqn.split(record?.fullyQualifiedName ?? '').pop(),
+                searchValue
+              )
+            )}
+          </Link>
+        ),
+      },
+      {
+        title: t('label.impacted-column-plural'),
+        dataIndex: ['toColumn'],
+        key: 'toColumn',
+        render: columnNameRender,
+      },
+      ...tableColumns.slice(1),
+    ],
+    [t, tableColumns, lineageDirection, columnNameRender, searchValue]
+  );
+
+  // Initialize quick filters on component mount
+  useEffect(() => {
+    const items = getLineageDropdownItems(
+      impactLevel === EImpactLevel.ColumnLevel
+    );
+    const updatedQuickFilters = items.map((selectedFilterItem) => {
+      const originalFilterItem = selectedQuickFilters?.find(
+        (filter) => filter.key === selectedFilterItem.key
+      );
+
+      return {
+        ...(originalFilterItem || selectedFilterItem),
+        // preserve original values if exists else set to empty array
+        value: originalFilterItem?.value || [],
+        hideCounts: impactLevel === EImpactLevel.ColumnLevel,
+      };
+    });
+
+    if (updatedQuickFilters.length > 0) {
+      setSelectedQuickFilters(updatedQuickFilters);
+    }
+  }, [impactLevel]);
+
+  // Determine columns and dataSource based on impactLevel
+  const { columns, dataSource } = useMemo(() => {
+    if (impactLevel === EImpactLevel.TableLevel) {
+      return {
+        columns: tableColumns,
+        dataSource: filterNodes,
+      };
+    } else {
+      const nodes =
+        lineageDirection === LineageDirection.Downstream
+          ? downstreamColumnLineageNodes
+          : upstreamColumnLineageNodes;
+
+      const source = nodes.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize
+      );
+
+      return {
+        columns: columnImpactColumns,
+        dataSource: source,
+      };
+    }
+  }, [
+    impactLevel,
+    filterNodes,
+    tableColumns,
+    columnImpactColumns,
+    lineageDirection,
+    downstreamColumnLineageNodes,
+    upstreamColumnLineageNodes,
+    currentPage,
+    pageSize,
+  ]);
+
+  // Memoized paging props to avoid unnecessary re-renders
+  const pagingProps = useMemo(() => {
+    return {
+      paging,
+      pageSize,
+      currentPage,
+      isNumberBased: true,
+      showPagination,
+      onShowSizeChange: handlePageSizeChange,
+      pagesizeOptions: [PAGE_SIZE_BASE, PAGE_SIZE_MEDIUM, PAGE_SIZE_LARGE],
+      pagingHandler: (data: PagingHandlerParams) => {
+        handlePageChange(data.currentPage);
+      },
+    };
+  }, [pageSize, currentPage, showPagination, paging, handlePageSizeChange]);
+
+  return (
+    <Card
+      className={classNames(
+        { isFullScreen },
+        'lineage-card lineage-card-table'
+      )}
+      data-testid="lineage-card-table"
+      title={cardHeader}
+    >
+      <Table
+        bordered
+        className="h-full"
+        columns={columns}
+        customPaginationProps={pagingProps}
+        dataSource={dataSource}
+        defaultVisibleColumns={IMPACT_ANALYSIS_DEFAULT_VISIBLE_COLUMNS}
+        entityType="impact_analysis"
+        extraTableFilters={extraTableFilters}
+        key={`lineage-table-${impactLevel}-${lineageDirection}-${nodeDepth}`}
+        loading={loading}
+        locale={{
+          emptyText: <NoDataPlaceholder size={SIZE.LARGE} />,
+        }}
+        pagination={false}
+        rowKey={
+          impactLevel === EImpactLevel.TableLevel
+            ? 'fullyQualifiedName'
+            : 'docId'
+        }
+        staticVisibleColumns={IMPACT_ANALYSIS_STATIC_COLUMNS}
+      />
+    </Card>
+  );
+};
+
+export default LineageTable;
