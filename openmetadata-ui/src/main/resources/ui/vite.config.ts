@@ -126,6 +126,7 @@ export default defineConfig(({ mode }) => {
         '/api/': {
           target: devServerTarget,
           changeOrigin: true,
+          secure: false,
           ws: true,
         },
       },

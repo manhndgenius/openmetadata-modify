@@ -393,3 +393,35 @@
     height: 180px;
   }
 }
+
+.generation-progress-inline-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+
+  .ant-card-body {
+    padding: 20px 24px;
+  }
+
+  .ant-steps-item-process .ant-steps-item-icon {
+    background: #1890ff;
+    border-color: #1890ff;
+  }
+
+  .ant-steps-item-finish .ant-steps-item-icon {
+    border-color: #52c41a;
+    .ant-steps-icon {
+      color: #52c41a;
+    }
+  }
+
+  .ant-steps-item-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .ant-steps-item-description {
+    line-height: 1.4;
+  }
+}
+
+

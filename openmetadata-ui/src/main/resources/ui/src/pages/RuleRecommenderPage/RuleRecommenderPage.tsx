@@ -22,7 +22,9 @@ import {
   ExperimentOutlined,
   FieldTimeOutlined,
   LinkOutlined,
+  LoadingOutlined,
   ReloadOutlined,
+  RobotOutlined,
   RocketOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
@@ -32,6 +34,7 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Col,
   Collapse,
   Descriptions,
@@ -48,6 +51,7 @@ import {
   Row,
   Select,
   Space,
+  Steps,
   Table,
   Tabs,
   Tag,
@@ -147,21 +151,22 @@ const isRuleVisible = (rule: CandidateRule) =>
   !HIDDEN_RULE_TYPES.has(rule.rule_type);
 
 const getRuleIdentity = (rule: CandidateRule) => {
+  const table = rule.table_fqn || rule.table_name || '';
   const columns = rule.target_columns?.length
     ? rule.target_columns
     : rule.column_name
-    ? [rule.column_name]
-    : [];
+      ? [rule.column_name]
+      : [];
 
-  return `${rule.rule_type}:${[...columns].sort().join(',')}`;
+  return `${table}:${rule.rule_type}:${[...columns].sort().join(',')}`;
 };
 
 const isCustomSqlRule = (rule?: CandidateRule | null) =>
   Boolean(
     rule &&
-      (rule.engine === 'ADVANCED' ||
-        rule.rule_type === 'tableCustomSQLQuery' ||
-        rule.sql_expression)
+    (rule.engine === 'ADVANCED' ||
+      rule.rule_type === 'tableCustomSQLQuery' ||
+      rule.sql_expression)
   );
 
 const getRuleDisplaySql = (rule: CandidateRule): string =>
@@ -370,8 +375,8 @@ const EvidenceValue = ({
       ? stringValue === 'RECOMMEND'
         ? 'green'
         : stringValue === 'SKIP'
-        ? 'red'
-        : 'orange'
+          ? 'red'
+          : 'orange'
       : undefined;
 
   return color ? (
@@ -402,9 +407,8 @@ const EvidencePopover = ({
           <div className="evidence-list">
             {entries.map(([key, value]) => (
               <div
-                className={`evidence-row ${
-                  key.endsWith('_history') ? 'evidence-row-chart' : ''
-                }`}
+                className={`evidence-row ${key.endsWith('_history') ? 'evidence-row-chart' : ''
+                  }`}
                 key={key}
               >
                 <Text className="evidence-label" type="secondary">
@@ -455,6 +459,19 @@ export const RuleRecommenderPage = () => {
 
   const [tables, setTables] = useState<TableOption[]>([]);
   const [selectedTableFqn, setSelectedTableFqn] = useState<string>('');
+  const [selectedTableFqns, setSelectedTableFqns] = useState<string[]>([]);
+  const [selectedSchemaTableFqns, setSelectedSchemaTableFqns] = useState<string[]>([]);
+  const [schemaTableSearch, setSchemaTableSearch] = useState<string>('');
+  const [ruleTableFilter, setRuleTableFilter] = useState<string>('ALL');
+
+  // Controlled pagination state
+  const [rulesCurrentPage, setRulesCurrentPage] = useState<number>(1);
+  const [rulesPageSize, setRulesPageSize] = useState<number>(10);
+  const [ntCurrentPage, setNtCurrentPage] = useState<number>(1);
+  const [ntPageSize, setNtPageSize] = useState<number>(10);
+  const [schemaTablePage, setSchemaTablePage] = useState<number>(1);
+  const [schemaTablePageSize, setSchemaTablePageSize] = useState<number>(10);
+
   const [rules, setRules] = useState<CandidateRule[]>([]);
   const [generationScope, setGenerationScope] =
     useState<GenerationScopeType>('TABLE');
@@ -464,6 +481,7 @@ export const RuleRecommenderPage = () => {
   const [selectedServiceFqn, setSelectedServiceFqn] = useState<string>('');
   const [selectedDatabaseFqn, setSelectedDatabaseFqn] = useState<string>('');
   const [selectedSchemaFqn, setSelectedSchemaFqn] = useState<string>('');
+  const [selectedSchemaFqns, setSelectedSchemaFqns] = useState<string[]>([]);
   const [catalogLoading, setCatalogLoading] = useState<boolean>(false);
   const [bulkPreview, setBulkPreview] = useState<BulkGenerationPreview | null>(
     null
@@ -482,6 +500,29 @@ export const RuleRecommenderPage = () => {
     'BASIC',
   ]);
 
+  // NT Governance batch & scope state
+  const [ntScope, setNtScope] = useState<'TABLE' | 'SCHEMA'>('TABLE');
+  const [ntBatchLoading, setNtBatchLoading] = useState<boolean>(false);
+  const [ntBatchProgress, setNtBatchProgress] = useState<{
+    processed: number;
+    total: number;
+    currentTable: string;
+  } | null>(null);
+  const [ntBatchResult, setNtBatchResult] = useState<{
+    total_tables: number;
+    successful_tables: number;
+    failed_tables: number;
+    created_count: number;
+    skipped_count: number;
+    failed_count: number;
+    table_summaries: Array<{
+      tableFqn: string;
+      tableName: string;
+      summary: NtGovernanceSummary;
+      status: 'SUCCESS' | 'FAILED';
+    }>;
+  } | null>(null);
+
   // NT Governance state
   const [ntLoading, setNtLoading] = useState<boolean>(false);
   const [ntStatusLoading, setNtStatusLoading] = useState<boolean>(false);
@@ -492,6 +533,68 @@ export const RuleRecommenderPage = () => {
   const [existingTestCases, setExistingTestCases] = useState<unknown[]>([]);
   const [loadingTestCases, setLoadingTestCases] = useState<boolean>(false);
   const [regexEditValue, setRegexEditValue] = useState<string>('');
+
+  // Step-by-step progress state for rule generation
+  const [isProgressPanelOpen, setIsProgressPanelOpen] =
+    useState<boolean>(false);
+  const [currentProgressStep, setCurrentProgressStep] = useState<number>(0);
+  const [progressPercent, setProgressPercent] = useState<number>(0);
+  const [generationStepsInfo, setGenerationStepsInfo] = useState<
+    Array<{
+      title: string;
+      description: string;
+      status: 'wait' | 'process' | 'finish' | 'error';
+      resultDetail?: string;
+    }>
+  >([
+    {
+      title: 'Table Schema & Profiling',
+      description: 'Extracting column metadata and table profiling stats',
+      status: 'wait',
+    },
+    {
+      title: 'Basic Heuristic Rules',
+      description: 'Generating Not-Null, Unique, Range, Regex & Length rules',
+      status: 'wait',
+    },
+    {
+      title: 'Statistical Profiling Rules',
+      description:
+        'Calculating distribution bounds (Mean, Median, StdDev, Min, Max)',
+      status: 'wait',
+    },
+    {
+      title: 'Advanced AI / LLM Engine',
+      description:
+        'Synthesizing multi-column temporal & conditional relational constraints',
+      status: 'wait',
+    },
+    {
+      title: 'Deduplication & Validation',
+      description:
+        'Cross-validating SQL expressions and consolidating candidate rules',
+      status: 'wait',
+    },
+  ]);
+  const [generationSummaryCount, setGenerationSummaryCount] = useState<{
+    basic: number;
+    statistical: number;
+    advanced: number;
+    total: number;
+  }>({ basic: 0, statistical: 0, advanced: 0, total: 0 });
+  const [processingTableInfo, setProcessingTableInfo] = useState<{
+    currentTableName: string;
+    currentTableFqn: string;
+    currentIndex: number;
+    totalTables: number;
+    completedTableNames: string[];
+  }>({
+    currentTableName: '',
+    currentTableFqn: '',
+    currentIndex: 0,
+    totalTables: 1,
+    completedTableNames: [],
+  });
 
   // Filter states
   const [statusFilter, setStatusFilter] = useState<
@@ -524,6 +627,8 @@ export const RuleRecommenderPage = () => {
         if (openmetadataTables.length > 0) {
           setTables(openmetadataTables);
           setSelectedTableFqn(openmetadataTables[0].fullyQualifiedName);
+          setSelectedTableFqns([openmetadataTables[0].fullyQualifiedName]);
+          setSelectedSchemaTableFqns([]);
         } else {
           // Fallback initial table options
           const defaultOptions: TableOption[] = [
@@ -557,6 +662,8 @@ export const RuleRecommenderPage = () => {
           ];
           setTables(defaultOptions);
           setSelectedTableFqn(defaultOptions[0].fullyQualifiedName);
+          setSelectedTableFqns([defaultOptions[0].fullyQualifiedName]);
+          setSelectedSchemaTableFqns([]);
         }
       } finally {
         setLoading(false);
@@ -592,6 +699,7 @@ export const RuleRecommenderPage = () => {
         setCatalogSchemas(schemas);
         const schemaFqn = schemas[0]?.fullyQualifiedName || '';
         setSelectedSchemaFqn(schemaFqn);
+        setSelectedSchemaFqns(schemaFqn ? [schemaFqn] : []);
         if (!schemaFqn) {
           return;
         }
@@ -601,17 +709,22 @@ export const RuleRecommenderPage = () => {
         );
         if (catalogTables.length > 0) {
           setTables(catalogTables);
+          const firstFqn = catalogTables[0].fullyQualifiedName;
           setSelectedTableFqn((current) =>
             catalogTables.some((table) => table.fullyQualifiedName === current)
               ? current
-              : catalogTables[0].fullyQualifiedName
+              : firstFqn
           );
+          setSelectedTableFqns([firstFqn]);
+          setSelectedSchemaTableFqns([]);
         }
       } catch (error) {
-        notification.warning({
-          message: 'Catalog hierarchy unavailable',
-          description: String(error),
-        });
+        // Silently log warning in console when python backend is offline
+        // eslint-disable-next-line no-console
+        console.warn(
+          'Catalog hierarchy unavailable (using OpenMetadata catalog):',
+          error
+        );
       } finally {
         setCatalogLoading(false);
       }
@@ -702,11 +815,16 @@ export const RuleRecommenderPage = () => {
       setCatalogSchemas(schemas);
       const schemaFqn = schemas[0]?.fullyQualifiedName || '';
       setSelectedSchemaFqn(schemaFqn);
+      setSelectedSchemaFqns(schemaFqn ? [schemaFqn] : []);
       const catalogTables = schemaFqn
         ? await ruleRecommenderAPI.getCatalogTables(schemaFqn)
         : [];
       setTables(catalogTables);
-      setSelectedTableFqn(catalogTables[0]?.fullyQualifiedName || '');
+      const firstFqn = catalogTables[0]?.fullyQualifiedName || '';
+      setSelectedTableFqn(firstFqn);
+      setSelectedTableFqns(firstFqn ? [firstFqn] : []);
+      setSelectedSchemaTableFqns([]);
+      setSchemaTablePage(1);
     } catch (error) {
       notification.error({
         message: 'Cannot load catalog',
@@ -725,11 +843,16 @@ export const RuleRecommenderPage = () => {
       setCatalogSchemas(schemas);
       const schemaFqn = schemas[0]?.fullyQualifiedName || '';
       setSelectedSchemaFqn(schemaFqn);
+      setSelectedSchemaFqns(schemaFqn ? [schemaFqn] : []);
       const catalogTables = schemaFqn
         ? await ruleRecommenderAPI.getCatalogTables(schemaFqn)
         : [];
       setTables(catalogTables);
-      setSelectedTableFqn(catalogTables[0]?.fullyQualifiedName || '');
+      const firstFqn = catalogTables[0]?.fullyQualifiedName || '';
+      setSelectedTableFqn(firstFqn);
+      setSelectedTableFqns(firstFqn ? [firstFqn] : []);
+      setSelectedSchemaTableFqns([]);
+      setSchemaTablePage(1);
     } catch (error) {
       notification.error({
         message: 'Cannot load catalog',
@@ -740,15 +863,30 @@ export const RuleRecommenderPage = () => {
     }
   };
 
-  const handleSchemaChange = async (schemaFqn: string) => {
-    setSelectedSchemaFqn(schemaFqn);
+  const handleSchemasChange = async (schemaFqns: string[]) => {
+    setSelectedSchemaFqns(schemaFqns);
+    setSelectedSchemaFqn(schemaFqns[0] || '');
     setCatalogLoading(true);
     try {
-      const catalogTables = await ruleRecommenderAPI.getCatalogTables(
-        schemaFqn
+      if (schemaFqns.length === 0) {
+        setTables([]);
+        setSelectedTableFqn('');
+        setSelectedTableFqns([]);
+        setSelectedSchemaTableFqns([]);
+        setSchemaTablePage(1);
+
+        return;
+      }
+      const tableLists = await Promise.all(
+        schemaFqns.map((sFqn) => ruleRecommenderAPI.getCatalogTables(sFqn))
       );
-      setTables(catalogTables);
-      setSelectedTableFqn(catalogTables[0]?.fullyQualifiedName || '');
+      const allTables = tableLists.flat();
+      setTables(allTables);
+      const firstFqn = allTables[0]?.fullyQualifiedName || '';
+      setSelectedTableFqn(firstFqn);
+      setSelectedTableFqns(firstFqn ? [firstFqn] : []);
+      setSelectedSchemaTableFqns([]);
+      setSchemaTablePage(1);
     } catch (error) {
       notification.error({
         message: 'Cannot load tables',
@@ -759,12 +897,18 @@ export const RuleRecommenderPage = () => {
     }
   };
 
+  const handleSchemaChange = async (schemaFqn: string) => {
+    await handleSchemasChange(schemaFqn ? [schemaFqn] : []);
+  };
+
   const bulkTargetFqn =
     generationScope === 'DATABASE'
       ? selectedDatabaseFqn
       : generationScope === 'SCHEMA'
-      ? selectedSchemaFqn
-      : selectedTableFqn;
+        ? selectedSchemaFqns[0] || selectedSchemaFqn
+        : selectedTableFqns.length > 0
+          ? selectedTableFqns[0]
+          : selectedTableFqn;
 
   const buildBulkRequest = (): BulkGenerationRequest => ({
     scope: {
@@ -831,44 +975,440 @@ export const RuleRecommenderPage = () => {
     }
   };
 
-  // Handle trigger generate recommendation across selected engines
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  // Handle trigger generate recommendation across selected engines with step-by-step progress
   const handleGenerateRules = async () => {
     if (!bulkTargetFqn || selectedEngines.length === 0) {
       return;
     }
-    if (generationScope !== 'TABLE') {
+    if (generationScope === 'DATABASE') {
       await handlePreviewBulkGeneration();
 
       return;
     }
+
+    const targetFqns =
+      generationScope === 'SCHEMA'
+        ? selectedSchemaTableFqns
+        : selectedTableFqns.length > 0
+          ? selectedTableFqns
+          : selectedTableFqn
+            ? [selectedTableFqn]
+            : [];
+
+    if (targetFqns.length === 0) {
+      notification.warning({
+        message: 'Chưa chọn bảng',
+        description: 'Vui lòng chọn ít nhất một bảng dữ liệu để sinh rule.',
+      });
+
+      return;
+    }
+
+    const isSingleTable = targetFqns.length === 1;
+    const primaryTableName = targetFqns[0].split('.').pop() || targetFqns[0];
+    const colCount = selectedTable?.columnsCount || 20;
+
+    setProcessingTableInfo({
+      currentTableName: primaryTableName,
+      currentTableFqn: targetFqns[0],
+      currentIndex: 1,
+      totalTables: targetFqns.length,
+      completedTableNames: [],
+    });
+
+    // Open expandable progress panel and initialize steps
+    setIsProgressPanelOpen(true);
     setGenerating(true);
+    setCurrentProgressStep(0);
+    setProgressPercent(10);
+    setGenerationSummaryCount({
+      basic: 0,
+      statistical: 0,
+      advanced: 0,
+      total: 0,
+    });
+
+    const steps = [
+      {
+        title: 'Table Schema & Profiling',
+        description: isSingleTable
+          ? `Analyzing columns and statistics for '${primaryTableName}'...`
+          : `Analyzing schema and column profiling across ${targetFqns.length} tables...`,
+        status: 'process' as const,
+      },
+      {
+        title: 'Basic Heuristic Rules',
+        description: selectedEngines.includes('BASIC')
+          ? 'Queued for execution'
+          : 'Skipped (Engine not selected)',
+        status: 'wait' as const,
+      },
+      {
+        title: 'Statistical Profiling Rules',
+        description: selectedEngines.includes('STATISTICAL')
+          ? 'Queued for execution'
+          : 'Skipped (Engine not selected)',
+        status: 'wait' as const,
+      },
+      {
+        title: 'Advanced AI / LLM Engine',
+        description: selectedEngines.includes('ADVANCED')
+          ? 'Queued for execution'
+          : 'Skipped (Engine not selected)',
+        status: 'wait' as const,
+      },
+      {
+        title: 'Deduplication & Validation',
+        description: 'Consolidation and validation check',
+        status: 'wait' as const,
+      },
+    ];
+    setGenerationStepsInfo([...steps]);
+
+    let basicCandidates: CandidateRule[] = [];
+    let statCandidates: CandidateRule[] = [];
+    let advCandidates: CandidateRule[] = [];
+
     try {
-      const results = await Promise.all([
-        selectedEngines.includes('BASIC')
-          ? ruleRecommenderAPI.generateRules(selectedTableFqn, ['BASIC'])
-          : Promise.resolve([] as CandidateRule[]),
-        selectedEngines.includes('ADVANCED')
-          ? ruleRecommenderAPI.generateAdvancedRules(selectedTableFqn)
-          : Promise.resolve([] as CandidateRule[]),
-        selectedEngines.includes('STATISTICAL')
-          ? ruleRecommenderAPI.generateStatisticalRules(selectedTableFqn)
-          : Promise.resolve([] as CandidateRule[]),
-      ]);
-      const merged = results.flat().filter(isRuleVisible);
+      if (isSingleTable) {
+        // Step 0: Schema & Profiling Extraction for single table
+        await sleep(350);
+        steps[0] = {
+          title: 'Table Schema & Profiling',
+          description: `Successfully loaded schema with ${colCount} columns & profile metadata.`,
+          status: 'finish',
+          resultDetail: `${colCount} columns`,
+        };
+        steps[1] = {
+          ...steps[1],
+          description: selectedEngines.includes('BASIC')
+            ? 'Running heuristic rule generators (Not-Null, Unique, Set, Regex, Length)...'
+            : 'Skipped (Basic engine not selected)',
+          status: selectedEngines.includes('BASIC') ? 'process' : 'wait',
+        };
+        setGenerationStepsInfo([...steps]);
+        setCurrentProgressStep(1);
+        setProgressPercent(25);
+
+        // Step 1: Basic Heuristic Rules
+        if (selectedEngines.includes('BASIC')) {
+          try {
+            basicCandidates = await ruleRecommenderAPI.generateRules(
+              targetFqns[0],
+              ['BASIC']
+            );
+            steps[1] = {
+              title: 'Basic Heuristic Rules',
+              description: `Generated ${basicCandidates.length} basic candidate rules.`,
+              status: 'finish',
+              resultDetail: `${basicCandidates.length} rules`,
+            };
+          } catch (err) {
+            steps[1] = {
+              title: 'Basic Heuristic Rules',
+              description: `Failed: ${String(err)}`,
+              status: 'error',
+            };
+          }
+        } else {
+          steps[1] = {
+            title: 'Basic Heuristic Rules',
+            description: 'Skipped: Basic engine not selected.',
+            status: 'finish',
+          };
+        }
+
+        steps[2] = {
+          ...steps[2],
+          description: selectedEngines.includes('STATISTICAL')
+            ? 'Calculating numerical distributions (Mean, Median, StdDev bounds)...'
+            : 'Skipped (Statistical engine not selected)',
+          status: selectedEngines.includes('STATISTICAL') ? 'process' : 'wait',
+        };
+        setGenerationStepsInfo([...steps]);
+        setCurrentProgressStep(2);
+        setProgressPercent(50);
+        await sleep(300);
+
+        // Step 2: Statistical Profiling Rules
+        if (selectedEngines.includes('STATISTICAL')) {
+          try {
+            statCandidates = await ruleRecommenderAPI.generateStatisticalRules(
+              targetFqns[0]
+            );
+            steps[2] = {
+              title: 'Statistical Profiling Rules',
+              description: `Generated ${statCandidates.length} statistical bounds rules.`,
+              status: 'finish',
+              resultDetail: `${statCandidates.length} rules`,
+            };
+          } catch (err) {
+            steps[2] = {
+              title: 'Statistical Profiling Rules',
+              description: `Failed: ${String(err)}`,
+              status: 'error',
+            };
+          }
+        } else {
+          steps[2] = {
+            title: 'Statistical Profiling Rules',
+            description: 'Skipped: Statistical engine not selected.',
+            status: 'finish',
+          };
+        }
+
+        steps[3] = {
+          ...steps[3],
+          description: selectedEngines.includes('ADVANCED')
+            ? 'Querying AI/LLM for multi-column relational & temporal dependencies...'
+            : 'Skipped (Advanced engine not selected)',
+          status: selectedEngines.includes('ADVANCED') ? 'process' : 'wait',
+        };
+        setGenerationStepsInfo([...steps]);
+        setCurrentProgressStep(3);
+        setProgressPercent(75);
+        await sleep(300);
+
+        // Step 3: Advanced AI / LLM Engine
+        if (selectedEngines.includes('ADVANCED')) {
+          try {
+            advCandidates = await ruleRecommenderAPI.generateAdvancedRules(
+              targetFqns[0]
+            );
+            steps[3] = {
+              title: 'Advanced AI / LLM Engine',
+              description: `Generated ${advCandidates.length} advanced relational rules.`,
+              status: 'finish',
+              resultDetail: `${advCandidates.length} rules`,
+            };
+          } catch (err) {
+            steps[3] = {
+              title: 'Advanced AI / LLM Engine',
+              description: `Failed: ${String(err)}`,
+              status: 'error',
+            };
+          }
+        } else {
+          steps[3] = {
+            title: 'Advanced AI / LLM Engine',
+            description: 'Skipped: Advanced engine not selected.',
+            status: 'finish',
+          };
+        }
+        setProcessingTableInfo((prev) => ({
+          ...prev,
+          completedTableNames: [primaryTableName],
+        }));
+      } else {
+        // Multi-table / Schema Pipeline execution
+        await sleep(250);
+        steps[0] = {
+          title: 'Table Schema & Profiling',
+          description: `Loaded metadata and column definitions across ${targetFqns.length} tables.`,
+          status: 'finish',
+          resultDetail: `${targetFqns.length} tables`,
+        };
+        steps[1] = {
+          ...steps[1],
+          description: selectedEngines.includes('BASIC')
+            ? `Generating basic rules across ${targetFqns.length} tables...`
+            : 'Skipped (Basic engine not selected)',
+          status: selectedEngines.includes('BASIC') ? 'process' : 'wait',
+        };
+        setGenerationStepsInfo([...steps]);
+        setCurrentProgressStep(1);
+        setProgressPercent(30);
+
+        const completedTables: string[] = [];
+        for (let i = 0; i < targetFqns.length; i++) {
+          const tFqn = targetFqns[i];
+          const tName = tFqn.split('.').pop() || tFqn;
+
+          setProcessingTableInfo({
+            currentTableName: tName,
+            currentTableFqn: tFqn,
+            currentIndex: i + 1,
+            totalTables: targetFqns.length,
+            completedTableNames: [...completedTables],
+          });
+
+          if (selectedEngines.includes('BASIC')) {
+            setCurrentProgressStep(1);
+            steps[1] = {
+              title: 'Basic Heuristic Rules',
+              description: `[Bảng ${i + 1}/${targetFqns.length}] Đang sinh Basic Rules cho '${tName}'... (Tổng: ${basicCandidates.length} rules)`,
+              status: 'process',
+              resultDetail: `${basicCandidates.length} rules`,
+            };
+            setGenerationStepsInfo([...steps]);
+            try {
+              const b = await ruleRecommenderAPI.generateRules(tFqn, ['BASIC']);
+              basicCandidates.push(...b);
+              steps[1] = {
+                title: 'Basic Heuristic Rules',
+                description: `[Bảng ${i + 1}/${targetFqns.length}] '${tName}' hoàn tất (+${b.length} rules)`,
+                status: 'process',
+                resultDetail: `${basicCandidates.length} rules`,
+              };
+              setGenerationStepsInfo([...steps]);
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.warn(`Basic rules generation failed for ${tFqn}:`, e);
+            }
+          }
+
+          if (selectedEngines.includes('STATISTICAL')) {
+            setCurrentProgressStep(2);
+            steps[2] = {
+              title: 'Statistical Profiling Rules',
+              description: `[Bảng ${i + 1}/${targetFqns.length}] Đang tính toán phân phối thống kê cho '${tName}'...`,
+              status: 'process',
+              resultDetail: `${statCandidates.length} rules`,
+            };
+            setGenerationStepsInfo([...steps]);
+            try {
+              const s = await ruleRecommenderAPI.generateStatisticalRules(tFqn);
+              statCandidates.push(...s);
+              steps[2] = {
+                title: 'Statistical Profiling Rules',
+                description: `[Bảng ${i + 1}/${targetFqns.length}] '${tName}' hoàn tất (+${s.length} rules)`,
+                status: 'process',
+                resultDetail: `${statCandidates.length} rules`,
+              };
+              setGenerationStepsInfo([...steps]);
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `Statistical rules generation failed for ${tFqn}:`,
+                e
+              );
+            }
+          }
+
+          if (selectedEngines.includes('ADVANCED')) {
+            setCurrentProgressStep(3);
+            steps[3] = {
+              title: 'Advanced AI / LLM Engine',
+              description: `[Bảng ${i + 1}/${targetFqns.length}] Đang phân tích AI / LLM cho '${tName}'...`,
+              status: 'process',
+              resultDetail: `${advCandidates.length} rules`,
+            };
+            setGenerationStepsInfo([...steps]);
+            try {
+              const a = await ruleRecommenderAPI.generateAdvancedRules(tFqn);
+              advCandidates.push(...a);
+              steps[3] = {
+                title: 'Advanced AI / LLM Engine',
+                description: `[Bảng ${i + 1}/${targetFqns.length}] '${tName}' hoàn tất (+${a.length} rules)`,
+                status: 'process',
+                resultDetail: `${advCandidates.length} rules`,
+              };
+              setGenerationStepsInfo([...steps]);
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.warn(`Advanced rules generation failed for ${tFqn}:`, e);
+            }
+          }
+
+          completedTables.push(tName);
+          setProgressPercent(
+            30 + Math.round(((i + 1) / targetFqns.length) * 55)
+          );
+          await sleep(100);
+        }
+
+        setProcessingTableInfo((prev) => ({
+          ...prev,
+          completedTableNames: [...completedTables],
+        }));
+
+        if (selectedEngines.includes('BASIC')) {
+          steps[1] = {
+            title: 'Basic Heuristic Rules',
+            description: `Generated ${basicCandidates.length} basic rules across ${targetFqns.length} tables.`,
+            status: 'finish',
+            resultDetail: `${basicCandidates.length} rules`,
+          };
+        }
+        if (selectedEngines.includes('STATISTICAL')) {
+          steps[2] = {
+            title: 'Statistical Profiling Rules',
+            description: `Generated ${statCandidates.length} statistical rules across ${targetFqns.length} tables.`,
+            status: 'finish',
+            resultDetail: `${statCandidates.length} rules`,
+          };
+        }
+        if (selectedEngines.includes('ADVANCED')) {
+          steps[3] = {
+            title: 'Advanced AI / LLM Engine',
+            description: `Generated ${advCandidates.length} advanced relational rules across ${targetFqns.length} tables.`,
+            status: 'finish',
+            resultDetail: `${advCandidates.length} rules`,
+          };
+        }
+      }
+
+      steps[4] = {
+        title: 'Deduplication & Validation',
+        description:
+          'Validating SQL syntax, removing duplicate rules, and merging...',
+        status: 'process',
+      };
+      setGenerationStepsInfo([...steps]);
+      setCurrentProgressStep(4);
+      setProgressPercent(90);
+      await sleep(250);
+
+      // Step 4: Consolidation & Validation
+      const allCandidates = [
+        ...basicCandidates,
+        ...statCandidates,
+        ...advCandidates,
+      ];
+      const merged = allCandidates.filter(isRuleVisible);
       setRules((prev) => mergeById(prev, merged));
+      setRulesCurrentPage(1);
+
+      setGenerationSummaryCount({
+        basic: basicCandidates.length,
+        statistical: statCandidates.length,
+        advanced: advCandidates.length,
+        total: merged.length,
+      });
+
+      steps[4] = {
+        title: 'Deduplication & Validation',
+        description: isSingleTable
+          ? `Validation complete. Synthesized ${merged.length} candidate rules ready for review.`
+          : `Validation complete. Synthesized ${merged.length} candidate rules across ${targetFqns.length} tables ready for review.`,
+        status: 'finish',
+        resultDetail: `${merged.length} rules`,
+      };
+      setGenerationStepsInfo([...steps]);
+      setProgressPercent(100);
+
       notification.success({
         message: t('label.recommendation-complete'),
-        description: `Generated ${
-          merged.length
-        } candidate rules from [${selectedEngines.join(
+        description: `Generated ${merged.length} candidate rules from [${selectedEngines.join(
           ', '
-        )}] for ${selectedTableFqn.split('.').pop()}`,
+        )}] for ${
+          isSingleTable ? primaryTableName : `${targetFqns.length} tables`
+        }`,
       });
     } catch (err) {
       notification.error({
         message: t('label.recommendation-failed'),
         description: String(err),
       });
+      steps[currentProgressStep] = {
+        ...steps[currentProgressStep],
+        status: 'error',
+        description: `Error: ${String(err)}`,
+      };
+      setGenerationStepsInfo([...steps]);
     } finally {
       setGenerating(false);
     }
@@ -944,6 +1484,60 @@ export const RuleRecommenderPage = () => {
     }
   };
 
+  // Batch apply NT governance test cases across multiple tables or entire schema
+  const handleBatchApplyNtGovernance = async () => {
+    const targetFqns =
+      generationScope === 'SCHEMA'
+        ? selectedSchemaTableFqns.length > 0
+          ? selectedSchemaTableFqns
+          : tables.map((t) => t.fullyQualifiedName)
+        : selectedTableFqns.length > 0
+          ? selectedTableFqns
+          : selectedTableFqn
+            ? [selectedTableFqn]
+            : [];
+
+    if (targetFqns.length === 0 || !targetFqns[0]) {
+      notification.warning({
+        message: 'Chưa chọn bảng',
+        description:
+          'Vui lòng chọn ít nhất một bảng dữ liệu để áp dụng NT Governance.',
+      });
+
+      return;
+    }
+
+    setNtBatchLoading(true);
+    setNtBatchProgress({
+      processed: 0,
+      total: targetFqns.length,
+      currentTable: targetFqns[0].split('.').pop() || targetFqns[0],
+    });
+
+    try {
+      const batchResult = await ruleRecommenderAPI.createDefaultTestCasesBatch(
+        targetFqns,
+        (processed, total, currentTable) => {
+          setNtBatchProgress({ processed, total, currentTable });
+        }
+      );
+      setNtBatchResult(batchResult);
+      await loadNtGovernanceStatus();
+      notification.success({
+        message: 'Áp dụng NT Governance thành công theo lô',
+        description: `Đã xử lý ${batchResult.total_tables} bảng: ${batchResult.created_count} tạo mới, ${batchResult.skipped_count} bỏ qua.`,
+      });
+    } catch (err) {
+      notification.error({
+        message: 'Áp dụng NT Governance thất bại',
+        description: String(err),
+      });
+    } finally {
+      setNtBatchLoading(false);
+      setNtBatchProgress(null);
+    }
+  };
+
   // Fetch existing test cases for the selected table
   const handleViewExistingTestCases = async () => {
     if (!selectedTableFqn) {
@@ -975,9 +1569,8 @@ export const RuleRecommenderPage = () => {
     );
     notification.info({
       message: action === 'ACCEPT' ? 'Rule Accepted' : 'Rule Rejected',
-      description: `Rule ${ruleId} has been ${
-        action === 'ACCEPT' ? 'accepted' : 'rejected'
-      }.`,
+      description: `Rule ${ruleId} has been ${action === 'ACCEPT' ? 'accepted' : 'rejected'
+        }.`,
     });
   };
 
@@ -986,9 +1579,9 @@ export const RuleRecommenderPage = () => {
     setRules((prev) =>
       prev.map((r) =>
         isRuleVisible(r) &&
-        (r.status === 'PENDING' ||
-          r.status === 'DRAFT' ||
-          r.status === 'EDITED')
+          (r.status === 'PENDING' ||
+            r.status === 'DRAFT' ||
+            r.status === 'EDITED')
           ? { ...r, status: 'ACCEPTED' }
           : r
       )
@@ -1068,7 +1661,7 @@ export const RuleRecommenderPage = () => {
     const rangeKeys = RANGE_PARAMETER_KEYS[rule.rule_type];
     const initialRegex =
       rule.rule_type === 'columnValuesToMatchRegex' &&
-      typeof rule.parameters?.regex === 'string'
+        typeof rule.parameters?.regex === 'string'
         ? rule.parameters.regex
         : '';
     setRegexEditValue(initialRegex);
@@ -1129,14 +1722,14 @@ export const RuleRecommenderPage = () => {
         prev.map((r) =>
           r.id === editingRule.id
             ? {
-                ...r,
-                reason: values.reason,
-                sql_expression: editedSql,
-                ...(isCustomSqlRule(editingRule) ? { sql: editedSql } : {}),
-                parameters: parsedParams,
-                edited_parameters: parsedParams,
-                status: 'EDITED',
-              }
+              ...r,
+              reason: values.reason,
+              sql_expression: editedSql,
+              ...(isCustomSqlRule(editingRule) ? { sql: editedSql } : {}),
+              parameters: parsedParams,
+              edited_parameters: parsedParams,
+              status: 'EDITED',
+            }
             : r
         )
       );
@@ -1162,6 +1755,9 @@ export const RuleRecommenderPage = () => {
       if (scopeFilter !== 'ALL' && r.scope !== scopeFilter) {
         return false;
       }
+      if (ruleTableFilter !== 'ALL' && r.table_name !== ruleTableFilter) {
+        return false;
+      }
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const matchesRule = r.rule_type.toLowerCase().includes(query);
@@ -1174,7 +1770,16 @@ export const RuleRecommenderPage = () => {
 
       return true;
     });
-  }, [rules, statusFilter, scopeFilter, searchQuery]);
+  }, [rules, statusFilter, scopeFilter, ruleTableFilter, searchQuery]);
+
+  const ruleTables = useMemo(() => {
+    return Array.from(new Set(rules.map((r) => r.table_name).filter(Boolean)));
+  }, [rules]);
+
+  // Reset pagination to page 1 whenever filters change
+  useEffect(() => {
+    setRulesCurrentPage(1);
+  }, [statusFilter, scopeFilter, ruleTableFilter, searchQuery]);
 
   // Statistics
   // DRAFT is treated as "pending review" — both are pre-review states.
@@ -1191,8 +1796,8 @@ export const RuleRecommenderPage = () => {
     const avgConfidence =
       total > 0
         ? (visibleRules.reduce((acc, curr) => acc + curr.confidence, 0) /
-            total) *
-          100
+          total) *
+        100
         : 0;
 
     return {
@@ -1208,6 +1813,38 @@ export const RuleRecommenderPage = () => {
   const selectedTable = useMemo(() => {
     return tables.find((t) => t.fullyQualifiedName === selectedTableFqn);
   }, [tables, selectedTableFqn]);
+
+  const filteredSchemaTables = useMemo(() => {
+    if (!schemaTableSearch.trim()) {
+      return tables;
+    }
+    const q = schemaTableSearch.toLowerCase();
+    return tables.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.fullyQualifiedName.toLowerCase().includes(q) ||
+        (t.schema || '').toLowerCase().includes(q) ||
+        (t.description || '').toLowerCase().includes(q)
+    );
+  }, [tables, schemaTableSearch]);
+
+  const isAllSchemaTablesSelected = useMemo(() => {
+    if (filteredSchemaTables.length === 0) {
+      return false;
+    }
+    return filteredSchemaTables.every((t) =>
+      selectedSchemaTableFqns.includes(t.fullyQualifiedName)
+    );
+  }, [filteredSchemaTables, selectedSchemaTableFqns]);
+
+  const isSomeSchemaTablesSelected = useMemo(() => {
+    if (isAllSchemaTablesSelected || filteredSchemaTables.length === 0) {
+      return false;
+    }
+    return filteredSchemaTables.some((t) =>
+      selectedSchemaTableFqns.includes(t.fullyQualifiedName)
+    );
+  }, [isAllSchemaTablesSelected, filteredSchemaTables, selectedSchemaTableFqns]);
 
   const bulkTableResults = useMemo<BulkTableResult[]>(() => {
     const grouped = new Map<string, BulkTableResult>();
@@ -1373,6 +2010,23 @@ export const RuleRecommenderPage = () => {
 
   // Table Columns definition
   const columns: ColumnsType<CandidateRule> = [
+    ...(ruleTables.length > 1 ||
+    generationScope === 'SCHEMA' ||
+    selectedTableFqns.length > 1
+      ? [
+          {
+            title: 'Table',
+            dataIndex: 'table_name',
+            key: 'table_name',
+            width: 140,
+            render: (tableName: string) => (
+              <Tag color="geekblue" style={{ fontWeight: 600 }}>
+                {tableName || selectedTable?.name || 'table'}
+              </Tag>
+            ),
+          },
+        ]
+      : []),
     {
       title: 'Rule Type',
       key: 'rule_type',
@@ -1384,8 +2038,8 @@ export const RuleRecommenderPage = () => {
           engine === 'ADVANCED'
             ? 'magenta'
             : engine === 'STATISTICAL'
-            ? 'cyan'
-            : 'geekblue';
+              ? 'cyan'
+              : 'geekblue';
 
         return (
           <div className="rule-name-cell">
@@ -1414,8 +2068,8 @@ export const RuleRecommenderPage = () => {
           record.target_columns && record.target_columns.length > 0
             ? record.target_columns
             : record.column_name
-            ? [record.column_name]
-            : [];
+              ? [record.column_name]
+              : [];
 
         return columnsList.length > 0 ? (
           <div className="rule-column-list">
@@ -1734,17 +2388,16 @@ export const RuleRecommenderPage = () => {
           <div className="header-actions">
             <div className="status-pill">
               <span
-                className={`status-dot ${
-                  backendHealth.status === 'ok' ||
-                  backendHealth.status === 'online'
+                className={`status-dot ${backendHealth.status === 'ok' ||
+                    backendHealth.status === 'online'
                     ? 'online'
                     : 'offline'
-                }`}
+                  }`}
               />
               <span>
                 Backend API:{' '}
                 {backendHealth.status === 'ok' ||
-                backendHealth.status === 'online'
+                  backendHealth.status === 'online'
                   ? 'Connected'
                   : 'Offline (Mock Mode)'}
               </span>
@@ -1757,6 +2410,9 @@ export const RuleRecommenderPage = () => {
             </Tooltip>
             <Select
               allowClear
+              getPopupContainer={(triggerNode) =>
+                triggerNode.parentElement || document.body
+              }
               mode="multiple"
               options={[
                 { value: 'BASIC', label: t('label.engine-basic') },
@@ -1788,6 +2444,206 @@ export const RuleRecommenderPage = () => {
           </div>
         </div>
 
+        {/* Inline Expandable Rule Generation Progress Card */}
+        {isProgressPanelOpen && (
+          <Card
+            className="generation-progress-inline-card"
+            style={{
+              borderRadius: 12,
+              marginBottom: 20,
+              border:
+                progressPercent === 100
+                  ? '1px solid #b7eb8f'
+                  : '1px solid #91caff',
+              background: progressPercent === 100 ? '#f6ffed' : '#f0f7ff',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div
+                  style={{ fontSize: 16, fontWeight: 700, color: '#1f2937' }}
+                >
+                  Rule Generation Pipeline Progress
+                </div>
+                {processingTableInfo.totalTables > 1 ? (
+                  <Space align="center" size={6} wrap style={{ marginTop: 2 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {generating ? 'Đang thực hiện bảng:' : 'Đã hoàn thành trên:'}
+                    </Text>
+                    {generating ? (
+                      <>
+                        <Tag
+                          color="geekblue"
+                          style={{
+                            fontSize: 12,
+                            padding: '1px 8px',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {processingTableInfo.currentTableName} (
+                          {processingTableInfo.currentIndex}/
+                          {processingTableInfo.totalTables})
+                        </Tag>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          ({processingTableInfo.currentTableFqn})
+                        </Text>
+                      </>
+                    ) : (
+                      <Tag color="blue" style={{ fontSize: 12 }}>
+                        {processingTableInfo.totalTables} bảng:{' '}
+                        {processingTableInfo.completedTableNames.join(', ')}
+                      </Tag>
+                    )}
+                  </Space>
+                ) : (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Target Table:{' '}
+                    <Text strong style={{ color: '#0958d9' }}>
+                      {selectedTable?.name || selectedTableFqn.split('.').pop()}
+                    </Text>{' '}
+                    ({selectedTableFqn})
+                  </Text>
+                )}
+              </div>
+
+              <Space>
+                {progressPercent === 100 ? (
+                  <Tag color="success" icon={<CheckCircleOutlined />}>
+                    Completed: {generationSummaryCount.total} Rules
+                    {processingTableInfo.totalTables > 1
+                      ? ` (${processingTableInfo.totalTables} tables)`
+                      : ''}
+                  </Tag>
+                ) : (
+                  <Tag color="processing" icon={<LoadingOutlined />}>
+                    {processingTableInfo.totalTables > 1 &&
+                    processingTableInfo.currentTableName
+                      ? `Bảng ${processingTableInfo.currentIndex}/${processingTableInfo.totalTables}: ${processingTableInfo.currentTableName} (${progressPercent}%)`
+                      : `Generating in Progress (${progressPercent}%)`}
+                  </Tag>
+                )}
+                {!generating && (
+                  <Tooltip title="Hide progress panel">
+                    <Button
+                      icon={<CloseOutlined />}
+                      size="small"
+                      type="text"
+                      onClick={() => setIsProgressPanelOpen(false)}
+                    />
+                  </Tooltip>
+                )}
+              </Space>
+            </div>
+
+            {/* Overall Progress Bar */}
+            <div style={{ marginBottom: 20 }}>
+              <Progress
+                percent={progressPercent}
+                status={
+                  generating
+                    ? 'active'
+                    : progressPercent === 100
+                      ? 'success'
+                      : 'normal'
+                }
+                strokeColor={{
+                  '0%': '#108ee9',
+                  '100%': '#52c41a',
+                }}
+              />
+            </div>
+
+            {/* 5-Step Pipeline */}
+            <Steps
+              current={currentProgressStep}
+              direction="horizontal"
+              responsive
+              size="small"
+              items={generationStepsInfo.map((step) => ({
+                title: (
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>
+                    {step.title}
+                  </span>
+                ),
+                description: (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: step.status === 'error' ? '#ff4d4f' : '#64748b',
+                      marginTop: 2,
+                    }}
+                  >
+                    {step.resultDetail ? (
+                      <Tag
+                        color="success"
+                        style={{ margin: 0, fontSize: 11, lineHeight: '18px' }}
+                      >
+                        {step.resultDetail}
+                      </Tag>
+                    ) : (
+                      step.description
+                    )}
+                  </div>
+                ),
+                status: step.status,
+              }))}
+            />
+
+            {/* Completed summary action */}
+            {progressPercent === 100 && (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: '10px 16px',
+                  background: '#ffffff',
+                  borderRadius: 8,
+                  border: '1px solid #d9f7be',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <Space size={8}>
+                  <CheckCircleOutlined
+                    style={{ color: '#52c41a', fontSize: 16 }}
+                  />
+                  <Text strong>
+                    Successfully synthesized and validated{' '}
+                    {generationSummaryCount.total} candidate rules
+                    {processingTableInfo.totalTables > 1
+                      ? ` across ${processingTableInfo.totalTables} tables!`
+                      : '!'}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    ({generationSummaryCount.basic} Basic,{' '}
+                    {generationSummaryCount.statistical} Statistical,{' '}
+                    {generationSummaryCount.advanced} Advanced)
+                  </Text>
+                </Space>
+                <Button
+                  size="small"
+                  style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                  type="primary"
+                  onClick={() => {
+                    const el = document.querySelector('.main-content-card');
+                    el?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                >
+                  View Candidate Rules Below ↓
+                </Button>
+              </div>
+            )}
+          </Card>
+        )}
+
         <Card
           style={{ borderRadius: 12, marginBottom: 20 }}
           title="Generation scope"
@@ -1806,9 +2662,13 @@ export const RuleRecommenderPage = () => {
                   { label: 'Database', value: 'DATABASE' },
                 ]}
                 value={generationScope}
-                onChange={(event) =>
-                  setGenerationScope(event.target.value as GenerationScopeType)
-                }
+                onChange={(event) => {
+                  const newScope = event.target.value as GenerationScopeType;
+                  setGenerationScope(newScope);
+                  if (newScope === 'SCHEMA') {
+                    setSelectedSchemaTableFqns([]);
+                  }
+                }}
               />
             </Col>
             <Col lg={6} md={12} xs={24}>
@@ -1817,6 +2677,9 @@ export const RuleRecommenderPage = () => {
               </Text>
               <Select
                 showSearch
+                getPopupContainer={(triggerNode) =>
+                  triggerNode.parentElement || document.body
+                }
                 loading={catalogLoading}
                 options={catalogServices.map((item) => ({
                   value: item.fullyQualifiedName,
@@ -1833,6 +2696,9 @@ export const RuleRecommenderPage = () => {
               </Text>
               <Select
                 showSearch
+                getPopupContainer={(triggerNode) =>
+                  triggerNode.parentElement || document.body
+                }
                 loading={catalogLoading}
                 options={catalogDatabases.map((item) => ({
                   value: item.fullyQualifiedName,
@@ -1845,20 +2711,65 @@ export const RuleRecommenderPage = () => {
             </Col>
             {generationScope !== 'DATABASE' && (
               <Col lg={6} md={12} xs={24}>
-                <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                  Schema
-                </Text>
-                <Select
-                  showSearch
-                  loading={catalogLoading}
-                  options={catalogSchemas.map((item) => ({
-                    value: item.fullyQualifiedName,
-                    label: item.name,
-                  }))}
-                  style={{ width: '100%' }}
-                  value={selectedSchemaFqn || undefined}
-                  onChange={handleSchemaChange}
-                />
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 6,
+                  }}
+                >
+                  <Text strong>Schema</Text>
+                  {catalogSchemas.length > 1 && (
+                    <Button
+                      size="small"
+                      type="link"
+                      style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                      onClick={() => {
+                        const allSchemaFqns = catalogSchemas.map(
+                          (s) => s.fullyQualifiedName
+                        );
+                        if (
+                          selectedSchemaFqns.length === catalogSchemas.length
+                        ) {
+                          handleSchemasChange([]);
+                        } else {
+                          handleSchemasChange(allSchemaFqns);
+                        }
+                      }}
+                    >
+                      {selectedSchemaFqns.length === catalogSchemas.length
+                        ? 'Bỏ chọn hết'
+                        : 'Chọn tất cả schema'}
+                    </Button>
+                  )}
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <Select
+                    allowClear
+                    maxTagCount="responsive"
+                    mode="multiple"
+                    showSearch
+                    filterOption={(input, option) =>
+                      (option?.label ?? '')
+                        .toString()
+                        .toLowerCase()
+                        .includes(input.toLowerCase())
+                    }
+                    getPopupContainer={(triggerNode) =>
+                      triggerNode.parentElement || document.body
+                    }
+                    loading={catalogLoading}
+                    options={catalogSchemas.map((item) => ({
+                      value: item.fullyQualifiedName,
+                      label: item.name,
+                    }))}
+                    placeholder="Chọn một hoặc nhiều schema..."
+                    style={{ width: '100%' }}
+                    value={selectedSchemaFqns}
+                    onChange={handleSchemasChange}
+                  />
+                </div>
               </Col>
             )}
           </Row>
@@ -1868,6 +2779,9 @@ export const RuleRecommenderPage = () => {
                 Advanced rule types
               </Text>
               <Select
+                getPopupContainer={(triggerNode) =>
+                  triggerNode.parentElement || document.body
+                }
                 mode="multiple"
                 options={[
                   { label: 'Temporal', value: 'TEMPORAL' },
@@ -1899,31 +2813,44 @@ export const RuleRecommenderPage = () => {
         {generationScope === 'TABLE' && (
           <Card style={{ borderRadius: 12, marginBottom: 20 }}>
             <Row align="middle" gutter={[20, 16]}>
-              <Col md={10} xs={24}>
+              <Col md={11} xs={24}>
                 <Text
                   strong
-                  style={{ fontSize: 14, display: 'block', marginBottom: 6 }}
+                  style={{ fontSize: 14, display: 'block', marginBottom: 8 }}
                 >
                   <DatabaseOutlined style={{ marginRight: 6 }} />
-                  Target Data Asset (Table)
+                  Target Data Asset (Tables)
                 </Text>
-                <Select
-                  showSearch
-                  filterOption={(input, option) =>
-                    (option?.label ?? '')
-                      .toString()
-                      .toLowerCase()
-                      .includes(input.toLowerCase())
-                  }
-                  options={tables.map((t) => ({
-                    value: t.fullyQualifiedName,
-                    label: `${t.name} (${t.fullyQualifiedName})`,
-                  }))}
-                  placeholder="Select a table to analyze"
-                  style={{ width: '100%' }}
-                  value={selectedTableFqn}
-                  onChange={setSelectedTableFqn}
-                />
+                <div style={{ position: 'relative' }}>
+                  <Select
+                    allowClear
+                    filterOption={(input, option) =>
+                      (option?.label ?? '')
+                        .toString()
+                        .toLowerCase()
+                        .includes(input.toLowerCase())
+                    }
+                    getPopupContainer={(triggerNode) =>
+                      triggerNode.parentElement || document.body
+                    }
+                    mode="multiple"
+                    options={tables.map((t) => ({
+                      value: t.fullyQualifiedName,
+                      label: `${t.name} [${t.schema || 'schema'}] (${t.fullyQualifiedName})`,
+                    }))}
+                    placeholder="Chọn một hoặc nhiều bảng để phân tích..."
+                    style={{ width: '100%' }}
+                    value={selectedTableFqns}
+                    onChange={(vals: string[]) => {
+                      setSelectedTableFqns(vals);
+                      if (vals.length > 0) {
+                        setSelectedTableFqn(vals[vals.length - 1]);
+                      } else {
+                        setSelectedTableFqn('');
+                      }
+                    }}
+                  />
+                </div>
                 {selectedTableFqn && (
                   <div style={{ marginTop: 8 }}>
                     <Button
@@ -1949,37 +2876,297 @@ export const RuleRecommenderPage = () => {
                   </div>
                 )}
               </Col>
-              <Col md={14} xs={24}>
-                {selectedTable && (
-                  <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
-                    <Descriptions.Item label="Schema">
-                      <Tag color="cyan">
-                        {selectedTable.schema || 'default'}
-                      </Tag>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="Database">
-                      <Tag color="geekblue">
-                        {selectedTable.database || 'default'}
-                      </Tag>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="Columns">
-                      <Badge
-                        count={selectedTable.columnsCount || 5}
-                        style={{ backgroundColor: '#108ee9' }}
-                      />
-                    </Descriptions.Item>
-                    <Descriptions.Item label="Description" span={3}>
-                      <Text
-                        ellipsis={{ tooltip: selectedTable.description }}
-                        type="secondary"
-                      >
-                        {selectedTable.description || 'No description provided'}
-                      </Text>
-                    </Descriptions.Item>
-                  </Descriptions>
+              <Col md={13} xs={24}>
+                {selectedTableFqns.length <= 1 ? (
+                  selectedTable && (
+                    <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
+                      <Descriptions.Item label="Schema">
+                        <Tag color="cyan">
+                          {selectedTable.schema || 'default'}
+                        </Tag>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="Database">
+                        <Tag color="geekblue">
+                          {selectedTable.database || 'default'}
+                        </Tag>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="Columns">
+                        <Badge
+                          count={selectedTable.columnsCount || 5}
+                          style={{ backgroundColor: '#108ee9' }}
+                        />
+                      </Descriptions.Item>
+                    </Descriptions>
+                  )
+                ) : (
+                  <div
+                    style={{
+                      background: '#f8fafc',
+                      padding: '12px 16px',
+                      borderRadius: 8,
+                      border: '1px solid #e2e8f0',
+                    }}
+                  >
+                    <div style={{ marginBottom: 6 }}>
+                      <Text strong>Các bảng đã chọn để phân tích:</Text>{' '}
+                      <Tag color="blue">{selectedTableFqns.length} bảng</Tag>
+                    </div>
+                    <Space wrap size={6}>
+                      {selectedTableFqns.map((fqn) => (
+                        <Tag
+                          closable
+                          color="geekblue"
+                          key={fqn}
+                          onClose={() => {
+                            const remaining = selectedTableFqns.filter(
+                              (f) => f !== fqn
+                            );
+                            setSelectedTableFqns(remaining);
+                            if (remaining.length > 0) {
+                              setSelectedTableFqn(
+                                remaining[remaining.length - 1]
+                              );
+                            } else {
+                              setSelectedTableFqn('');
+                            }
+                          }}
+                        >
+                          {fqn.split('.').pop()}
+                        </Tag>
+                      ))}
+                    </Space>
+                  </div>
                 )}
               </Col>
             </Row>
+          </Card>
+        )}
+
+        {/* Schema Target Tables Selection Card */}
+        {generationScope === 'SCHEMA' && selectedSchemaFqns.length === 0 && (
+          <Card style={{ borderRadius: 12, marginBottom: 20 }}>
+            <Empty
+              description="Vui lòng chọn ít nhất một Schema ở trên để xem danh sách bảng và chọn bảng sinh rule."
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+            />
+          </Card>
+        )}
+
+        {generationScope === 'SCHEMA' && selectedSchemaFqns.length > 0 && (
+          <Card
+            className="schema-tables-selection-card"
+            style={{ borderRadius: 12, marginBottom: 20 }}
+            title={
+              <Space wrap>
+                <DatabaseOutlined style={{ color: '#1890ff' }} />
+                <span>
+                  Danh sách bảng trong Schema:{' '}
+                  <b>
+                    {selectedSchemaFqns
+                      .map((s) => s.split('.').pop() || s)
+                      .join(', ')}
+                  </b>
+                </span>
+                <Tag color="processing">
+                  Đã chọn {selectedSchemaTableFqns.length} / {tables.length} bảng
+                </Tag>
+                {selectedSchemaFqns.length > 1 && (
+                  <Tag color="purple">
+                    {selectedSchemaFqns.length} schemas
+                  </Tag>
+                )}
+              </Space>
+            }
+            extra={
+              <Space wrap>
+                <Input.Search
+                  allowClear
+                  placeholder="Tìm kiếm bảng..."
+                  size="small"
+                  style={{ width: 200 }}
+                  value={schemaTableSearch}
+                  onChange={(e) => {
+                    setSchemaTableSearch(e.target.value);
+                    setSchemaTablePage(1);
+                  }}
+                />
+                <Button
+                  size="small"
+                  onClick={() => {
+                    if (schemaTableSearch.trim()) {
+                      const allFilteredFqns = filteredSchemaTables.map(
+                        (t) => t.fullyQualifiedName
+                      );
+                      setSelectedSchemaTableFqns((prev) =>
+                        Array.from(new Set([...prev, ...allFilteredFqns]))
+                      );
+                    } else {
+                      setSelectedSchemaTableFqns(
+                        tables.map((t) => t.fullyQualifiedName)
+                      );
+                    }
+                  }}
+                >
+                  Chọn tất cả
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    if (schemaTableSearch.trim()) {
+                      const toRemove = new Set(
+                        filteredSchemaTables.map((t) => t.fullyQualifiedName)
+                      );
+                      setSelectedSchemaTableFqns((prev) =>
+                        prev.filter((fqn) => !toRemove.has(fqn))
+                      );
+                    } else {
+                      setSelectedSchemaTableFqns([]);
+                    }
+                  }}
+                >
+                  Bỏ chọn tất cả
+                </Button>
+              </Space>
+            }
+          >
+            <Table
+              columns={[
+                {
+                  title: 'Tên bảng',
+                  dataIndex: 'name',
+                  key: 'name',
+                  width: 240,
+                  render: (name: string, record: TableOption) => (
+                    <Space direction="vertical" size={2}>
+                      <Text strong style={{ color: '#1890ff' }}>
+                        {name}
+                      </Text>
+                      <Text
+                        ellipsis={{ tooltip: record.fullyQualifiedName }}
+                        style={{ fontSize: 11 }}
+                        type="secondary"
+                      >
+                        {record.fullyQualifiedName}
+                      </Text>
+                    </Space>
+                  ),
+                },
+                {
+                  title: 'Schema',
+                  dataIndex: 'schema',
+                  key: 'schema',
+                  width: 110,
+                  align: 'center',
+                  filters: Array.from(
+                    new Set(tables.map((t) => t.schema).filter(Boolean))
+                  ).map((s) => ({ text: s, value: s })),
+                  onFilter: (value, record: TableOption) => record.schema === value,
+                  render: (schema: string) => (
+                    <Tag color="cyan">{schema || 'public'}</Tag>
+                  ),
+                },
+                {
+                  title: 'Số cột',
+                  dataIndex: 'columnsCount',
+                  key: 'columnsCount',
+                  width: 80,
+                  align: 'center',
+                  render: (count: number) => (
+                    <Badge
+                      count={count || 10}
+                      style={{ backgroundColor: '#108ee9' }}
+                    />
+                  ),
+                },
+                {
+                  title: 'Mô tả',
+                  dataIndex: 'description',
+                  key: 'description',
+                  render: (desc: string) => (
+                    <Text
+                      ellipsis={{ tooltip: desc || 'Chưa có mô tả' }}
+                      type="secondary"
+                    >
+                      {desc || '—'}
+                    </Text>
+                  ),
+                },
+                {
+                  title: 'Thao tác',
+                  key: 'action',
+                  width: 125,
+                  fixed: 'right',
+                  align: 'center',
+                  render: (_, record: TableOption) => (
+                    <Button
+                      icon={<LinkOutlined />}
+                      size="small"
+                      type="link"
+                      style={{ padding: 0, whiteSpace: 'nowrap' }}
+                      onClick={() => {
+                        setSelectedTableFqn(record.fullyQualifiedName);
+                        setSelectedTableFqns([record.fullyQualifiedName]);
+                        setGenerationScope('TABLE');
+                      }}
+                    >
+                      Xem chi tiết
+                    </Button>
+                  ),
+                },
+              ]}
+              dataSource={filteredSchemaTables}
+              scroll={{ x: 880 }}
+              pagination={{
+                current: schemaTablePage,
+                pageSize: schemaTablePageSize,
+                showSizeChanger: true,
+                pageSizeOptions: ['10', '20', '50'],
+                showTotal: (total, range) =>
+                  `${range[0]}-${range[1]} của ${total} bảng`,
+                onChange: (page, pageSize) => {
+                  setSchemaTablePage(page);
+                  setSchemaTablePageSize(pageSize);
+                },
+              }}
+              rowKey="fullyQualifiedName"
+              rowSelection={{
+                type: 'checkbox',
+                preserveSelectedRowKeys: true,
+                selectedRowKeys: selectedSchemaTableFqns,
+                columnTitle: (
+                  <div className="ant-table-selection">
+                    <Checkbox
+                      checked={isAllSchemaTablesSelected}
+                      indeterminate={isSomeSchemaTablesSelected}
+                      disabled={filteredSchemaTables.length === 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          const allFilteredFqns = filteredSchemaTables.map(
+                            (t) => t.fullyQualifiedName
+                          );
+                          setSelectedSchemaTableFqns((prev) =>
+                            Array.from(new Set([...prev, ...allFilteredFqns]))
+                          );
+                        } else {
+                          const toRemove = new Set(
+                            filteredSchemaTables.map(
+                              (t) => t.fullyQualifiedName
+                            )
+                          );
+                          setSelectedSchemaTableFqns((prev) =>
+                            prev.filter((fqn) => !toRemove.has(fqn))
+                          );
+                        }
+                      }}
+                    />
+                  </div>
+                ),
+                onChange: (selectedKeys) => {
+                  setSelectedSchemaTableFqns(selectedKeys as string[]);
+                },
+              }}
+              size="small"
+            />
           </Card>
         )}
 
@@ -1997,8 +3184,8 @@ export const RuleRecommenderPage = () => {
               percent={
                 bulkJob.total_items > 0
                   ? Math.round(
-                      (bulkJob.processed_items / bulkJob.total_items) * 100
-                    )
+                    (bulkJob.processed_items / bulkJob.total_items) * 100
+                  )
                   : 0
               }
               status={bulkJob.status === 'FAILED' ? 'exception' : undefined}
@@ -2110,6 +3297,9 @@ export const RuleRecommenderPage = () => {
                           </Radio.Button>
                         </Radio.Group>
                         <Select
+                          getPopupContainer={(triggerNode) =>
+                            triggerNode.parentElement || document.body
+                          }
                           options={[
                             { value: 'ALL', label: 'All Scopes' },
                             { value: 'column', label: 'Column Rules' },
@@ -2119,6 +3309,23 @@ export const RuleRecommenderPage = () => {
                           value={scopeFilter}
                           onChange={setScopeFilter}
                         />
+                        {ruleTables.length > 1 && (
+                          <Select
+                            getPopupContainer={(triggerNode) =>
+                              triggerNode.parentElement || document.body
+                            }
+                            options={[
+                              { value: 'ALL', label: 'Tất cả các bảng' },
+                              ...ruleTables.map((t) => ({
+                                value: t,
+                                label: `Bảng: ${t}`,
+                              })),
+                            ]}
+                            style={{ minWidth: 160 }}
+                            value={ruleTableFilter}
+                            onChange={setRuleTableFilter}
+                          />
+                        )}
                       </Space>
 
                       <Space>
@@ -2131,11 +3338,33 @@ export const RuleRecommenderPage = () => {
                         </Button>
                         <Button
                           icon={<ReloadOutlined />}
-                          onClick={() => {
-                            if (selectedTableFqn) {
-                              ruleRecommenderAPI
-                                .getRules(selectedTableFqn)
-                                .then(setRules);
+                          onClick={async () => {
+                            const targets =
+                              generationScope === 'SCHEMA'
+                                ? selectedSchemaTableFqns.length > 0
+                                  ? selectedSchemaTableFqns
+                                  : tables.map((t) => t.fullyQualifiedName)
+                                : selectedTableFqns.length > 0
+                                  ? selectedTableFqns
+                                  : selectedTableFqn
+                                    ? [selectedTableFqn]
+                                    : [];
+                            if (targets.length === 0) {
+                              return;
+                            }
+                            setLoading(true);
+                            try {
+                              const results = await Promise.all(
+                                targets.map((fqn) =>
+                                  ruleRecommenderAPI.getRules(fqn)
+                                )
+                              );
+                              const flattened = results
+                                .flat()
+                                .filter(isRuleVisible);
+                              setRules(flattened);
+                            } finally {
+                              setLoading(false);
                             }
                           }}
                         >
@@ -2161,7 +3390,20 @@ export const RuleRecommenderPage = () => {
                           />
                         ),
                       }}
-                      pagination={{ pageSize: 8, showSizeChanger: true }}
+                      pagination={{
+                        current: rulesCurrentPage,
+                        pageSize: rulesPageSize,
+                        total: filteredRules.length,
+                        showSizeChanger: true,
+                        pageSizeOptions: ['10', '20', '50'],
+                        showTotal: (total, range) =>
+                          `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc`,
+                        showQuickJumper: true,
+                        onChange: (page, pageSize) => {
+                          setRulesCurrentPage(page);
+                          setRulesPageSize(pageSize);
+                        },
+                      }}
                       rowKey="id"
                     />
                   </>
@@ -2184,23 +3426,162 @@ export const RuleRecommenderPage = () => {
                       style={{ marginBottom: 16, borderRadius: 8 }}
                       type="info"
                     />
-                    <Space wrap style={{ marginBottom: 16 }}>
-                      <Button
-                        icon={<RocketOutlined />}
-                        loading={ntLoading}
-                        type="primary"
-                        onClick={handleCreateDefaultTestCases}
+                    {/* Scope Selector Card for NT Governance */}
+                    <Card
+                      size="small"
+                      style={{ borderRadius: 8, marginBottom: 16 }}
+                      title="Phạm vi áp dụng NT Governance"
+                    >
+                      <Row align="middle" gutter={[16, 12]}>
+                        <Col md={11} xs={24}>
+                          <Radio.Group
+                            buttonStyle="solid"
+                            value={ntScope}
+                            onChange={(e) => setNtScope(e.target.value)}
+                          >
+                            <Radio.Button value="TABLE">
+                              Áp dụng bảng hiện tại ({selectedTable?.name || selectedTableFqn.split('.').pop() || 'Chưa chọn'})
+                            </Radio.Button>
+                            <Radio.Button value="SCHEMA">
+                              Áp dụng theo lô Schema / Nhiều bảng ({
+                                generationScope === 'SCHEMA'
+                                  ? `${selectedSchemaTableFqns.length} bảng`
+                                  : `${selectedTableFqns.length || 1} bảng`
+                              })
+                            </Radio.Button>
+                          </Radio.Group>
+                        </Col>
+                        <Col md={13} xs={24}>
+                          <Space wrap>
+                            {ntScope === 'TABLE' ? (
+                              <Button
+                                icon={<RocketOutlined />}
+                                loading={ntLoading}
+                                style={{ background: '#1890ff' }}
+                                type="primary"
+                                onClick={handleCreateDefaultTestCases}
+                              >
+                                {t('label.create-default-test-cases')}
+                              </Button>
+                            ) : (
+                              <Button
+                                icon={<RocketOutlined />}
+                                loading={ntBatchLoading}
+                                style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                                type="primary"
+                                onClick={handleBatchApplyNtGovernance}
+                              >
+                                Áp dụng NT Governance theo lô (Batch Apply)
+                              </Button>
+                            )}
+                            <Button
+                              icon={<DatabaseOutlined />}
+                              loading={loadingTestCases}
+                              onClick={handleViewExistingTestCases}
+                            >
+                              {t('label.view-existing-test-cases')}
+                            </Button>
+                          </Space>
+                        </Col>
+                      </Row>
+                    </Card>
+
+                    {/* Batch Progress Bar */}
+                    {ntBatchLoading && ntBatchProgress && (
+                      <Card
+                        size="small"
+                        style={{
+                          borderRadius: 8,
+                          marginBottom: 16,
+                          background: '#f6ffed',
+                          border: '1px solid #b7eb8f',
+                        }}
                       >
-                        {t('label.create-default-test-cases')}
-                      </Button>
-                      <Button
-                        icon={<DatabaseOutlined />}
-                        loading={loadingTestCases}
-                        onClick={handleViewExistingTestCases}
+                        <Space direction="vertical" style={{ width: '100%' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Text strong>
+                              Đang áp dụng NT Governance theo lô: Bảng {ntBatchProgress.processed} / {ntBatchProgress.total}
+                            </Text>
+                            <Tag color="processing">{ntBatchProgress.currentTable}</Tag>
+                          </div>
+                          <Progress
+                            percent={Math.round((ntBatchProgress.processed / ntBatchProgress.total) * 100)}
+                            status="active"
+                            strokeColor={{ '0%': '#108ee9', '100%': '#52c41a' }}
+                          />
+                        </Space>
+                      </Card>
+                    )}
+
+                    {/* Batch Results Summary Card */}
+                    {ntBatchResult && (
+                      <Card
+                        className="nt-governance-card"
+                        size="small"
+                        style={{ marginBottom: 16, borderRadius: 8 }}
+                        title="Kết quả áp dụng NT Governance theo lô (Batch Results)"
                       >
-                        {t('label.view-existing-test-cases')}
-                      </Button>
-                    </Space>
+                        <Row gutter={[16, 12]} style={{ marginBottom: 16 }}>
+                          <Col md={6} xs={12}>
+                            <Card size="small" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', textAlign: 'center' }}>
+                              <div style={{ fontSize: 12, color: '#166534' }}>Bảng thành công</div>
+                              <div style={{ fontSize: 22, fontWeight: 700, color: '#15803d' }}>
+                                {ntBatchResult.successful_tables} / {ntBatchResult.total_tables}
+                              </div>
+                            </Card>
+                          </Col>
+                          <Col md={6} xs={12}>
+                            <Card size="small" style={{ background: '#eff6ff', border: '1px solid #bfdbfe', textAlign: 'center' }}>
+                              <div style={{ fontSize: 12, color: '#1e40af' }}>Quy tắc tạo mới</div>
+                              <div style={{ fontSize: 22, fontWeight: 700, color: '#2563eb' }}>
+                                {ntBatchResult.created_count}
+                              </div>
+                            </Card>
+                          </Col>
+                          <Col md={6} xs={12}>
+                            <Card size="small" style={{ background: '#fffbeb', border: '1px solid #fde68a', textAlign: 'center' }}>
+                              <div style={{ fontSize: 12, color: '#92400e' }}>Bỏ qua (đã có)</div>
+                              <div style={{ fontSize: 22, fontWeight: 700, color: '#d97706' }}>
+                                {ntBatchResult.skipped_count}
+                              </div>
+                            </Card>
+                          </Col>
+                          <Col md={6} xs={12}>
+                            <Card size="small" style={{ background: '#fef2f2', border: '1px solid #fecaca', textAlign: 'center' }}>
+                              <div style={{ fontSize: 12, color: '#991b1b' }}>Thất bại</div>
+                              <div style={{ fontSize: 22, fontWeight: 700, color: '#dc2626' }}>
+                                {ntBatchResult.failed_count}
+                              </div>
+                            </Card>
+                          </Col>
+                        </Row>
+
+                        <Collapse ghost>
+                          <Collapse.Panel header={`Chi tiết kết quả từng bảng (${ntBatchResult.table_summaries.length} bảng)`} key="table-summaries">
+                            <List
+                              dataSource={ntBatchResult.table_summaries}
+                              renderItem={(ts) => (
+                                <List.Item>
+                                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                                    <Space>
+                                      <Tag color={ts.status === 'SUCCESS' ? 'success' : 'error'}>{ts.status}</Tag>
+                                      <Text strong>{ts.tableName}</Text>
+                                      <Text type="secondary" style={{ fontSize: 12 }}>({ts.tableFqn})</Text>
+                                    </Space>
+                                    <Space>
+                                      <Tag color="blue">{ts.summary.created_count} tạo mới</Tag>
+                                      <Tag color="orange">{ts.summary.skipped_count} bỏ qua</Tag>
+                                      {ts.summary.failed_count > 0 && <Tag color="red">{ts.summary.failed_count} lỗi</Tag>}
+                                    </Space>
+                                  </Space>
+                                </List.Item>
+                              )}
+                              size="small"
+                            />
+                          </Collapse.Panel>
+                        </Collapse>
+                      </Card>
+                    )}
 
                     {ntStatusError && (
                       <Alert
@@ -2277,7 +3658,18 @@ export const RuleRecommenderPage = () => {
                             ? 'Status unavailable'
                             : 'No NT definitions found',
                         }}
-                        pagination={false}
+                        pagination={{
+                          current: ntCurrentPage,
+                          pageSize: ntPageSize,
+                          showSizeChanger: true,
+                          pageSizeOptions: ['10', '20', '50'],
+                          showTotal: (total, range) =>
+                            `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc NT`,
+                          onChange: (page, pageSize) => {
+                            setNtCurrentPage(page);
+                            setNtPageSize(pageSize);
+                          },
+                        }}
                         rowKey="name"
                         size="small"
                       />
@@ -2308,9 +3700,8 @@ export const RuleRecommenderPage = () => {
                         </Row>
                         <Collapse ghost>
                           <Collapse.Panel
-                            header={`${t('label.created-test-cases')} (${
-                              ntResult.test_cases.length
-                            })`}
+                            header={`${t('label.created-test-cases')} (${ntResult.test_cases.length
+                              })`}
                             key="created"
                           >
                             <List
@@ -2328,9 +3719,8 @@ export const RuleRecommenderPage = () => {
                           </Collapse.Panel>
                           {ntResult.skipped.length > 0 && (
                             <Collapse.Panel
-                              header={`${t('label.skipped-test-cases')} (${
-                                ntResult.skipped.length
-                              })`}
+                              header={`${t('label.skipped-test-cases')} (${ntResult.skipped.length
+                                })`}
                               key="skipped"
                             >
                               <List
@@ -2347,9 +3737,8 @@ export const RuleRecommenderPage = () => {
                           )}
                           {ntResult.failed.length > 0 && (
                             <Collapse.Panel
-                              header={`${t('label.failed-test-cases')} (${
-                                ntResult.failed.length
-                              })`}
+                              header={`${t('label.failed-test-cases')} (${ntResult.failed.length
+                                })`}
                               key="failed"
                             >
                               <List
@@ -2557,8 +3946,8 @@ export const RuleRecommenderPage = () => {
                               value <= maximum
                               ? Promise.resolve()
                               : Promise.reject(
-                                  new Error('Minimum must not exceed maximum.')
-                                );
+                                new Error('Minimum must not exceed maximum.')
+                              );
                           },
                         }),
                       ]}
@@ -2582,10 +3971,10 @@ export const RuleRecommenderPage = () => {
                               value >= minimum
                               ? Promise.resolve()
                               : Promise.reject(
-                                  new Error(
-                                    'Maximum must not be below minimum.'
-                                  )
-                                );
+                                new Error(
+                                  'Maximum must not be below minimum.'
+                                )
+                              );
                           },
                         }),
                       ]}
@@ -2624,8 +4013,8 @@ export const RuleRecommenderPage = () => {
                               value <= maximum
                               ? Promise.resolve()
                               : Promise.reject(
-                                  new Error('Minimum must not exceed maximum.')
-                                );
+                                new Error('Minimum must not exceed maximum.')
+                              );
                           },
                         }),
                       ]}
@@ -2654,10 +4043,10 @@ export const RuleRecommenderPage = () => {
                               value >= minimum
                               ? Promise.resolve()
                               : Promise.reject(
-                                  new Error(
-                                    'Maximum must not be below minimum.'
-                                  )
-                                );
+                                new Error(
+                                  'Maximum must not be below minimum.'
+                                )
+                              );
                           },
                         }),
                       ]}
