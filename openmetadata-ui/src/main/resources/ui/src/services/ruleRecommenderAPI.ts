@@ -1307,6 +1307,16 @@ export const ruleRecommenderAPI = {
           continue;
         }
 
+        if (
+          rule.rule_type === 'columnValuesToBeInSet' &&
+          (!Array.isArray(rule.parameters?.allowedValues) ||
+            rule.parameters.allowedValues.length === 0)
+        ) {
+          failures.push(`${rule.rule_type} (missing allowedValues)`);
+
+          continue;
+        }
+
         const entityLink =
           rule.scope === 'column' && rule.column_name
             ? `<#E::table::${tableFqn}::columns::${rule.column_name}>`
@@ -1442,7 +1452,7 @@ export const ruleRecommenderAPI = {
       // Backend is optional/local
     }
 
-    const finalCount = publishedCount > 0 ? publishedCount : rulesList.length;
+    const finalCount = publishedCount;
 
     return {
       publishedCount: finalCount,

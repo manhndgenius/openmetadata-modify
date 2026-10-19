@@ -18,9 +18,11 @@ import {
   CloseCircleOutlined,
   CloseOutlined,
   DatabaseOutlined,
+  DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
   FieldTimeOutlined,
+  PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
@@ -117,6 +119,11 @@ const LENGTH_BETWEEN_RULE_TYPES = new Set([
 
 const isLengthBetweenRule = (ruleType?: string) =>
   Boolean(ruleType && LENGTH_BETWEEN_RULE_TYPES.has(ruleType));
+
+const hasConfiguredAllowedValues = (rule: CandidateRule) =>
+  rule.rule_type !== 'columnValuesToBeInSet' ||
+  (Array.isArray(rule.parameters?.allowedValues) &&
+    rule.parameters.allowedValues.length > 0);
 
 // Temporary FE-only suppression. The backend can keep generating this rule.
 const HIDDEN_RULE_TYPES = new Set(['tableRowCountToBeBetween']);
@@ -441,7 +448,24 @@ export const RuleRecommenderPage = () => {
   const [regexEditValue, setRegexEditValue] = useState<string>('');
 
   // NT Rule Config Modal
-  const ntRuleConfigModal = useNtRuleConfigModal();
+  const [ntRuleConfigModal, setNtRuleConfigModal] = useState<{
+    isOpen: boolean;
+    selectedRule: NtTestDefinition | null;
+    config: Record<string, unknown> | null;
+    isSaving: boolean;
+    loadingRuleName: string | null;
+  }>({
+    isOpen: false,
+    selectedRule: null,
+    config: null,
+    isSaving: false,
+    loadingRuleName: null,
+  });
+
+  // Dynamic parameters state for Edit Rule Modal
+  const [dynamicParams, setDynamicParams] = useState<
+    Array<{ key: string; value: string }>
+  >([]);
 
   // Top-level tabs: 'rules' vs 'nt-governance'
   const [activeTab, setActiveTab] = useState<'rules' | 'nt-governance'>(
@@ -575,6 +599,21 @@ export const RuleRecommenderPage = () => {
     ruleId: string,
     action: 'ACCEPT' | 'REJECT'
   ) => {
+    const selectedRule = rules.find((rule) => rule.id === ruleId);
+    if (
+      action === 'ACCEPT' &&
+      selectedRule &&
+      !hasConfiguredAllowedValues(selectedRule)
+    ) {
+      notification.warning({
+        message: 'Allowed values required',
+        description:
+          'Use Edit parameters to configure allowedValues before accepting this Values In Set rule.',
+      });
+
+      return;
+    }
+
     await ruleRecommenderAPI.reviewRule(ruleId, action);
     setRules((prev) =>
       prev.map((r) =>
@@ -593,9 +632,18 @@ export const RuleRecommenderPage = () => {
 
   // Accept all pending rules
   const handleAcceptAll = () => {
+    const unconfiguredCount = rules.filter(
+      (rule) =>
+        isRuleVisible(rule) &&
+        (rule.status === 'PENDING' ||
+          rule.status === 'DRAFT' ||
+          rule.status === 'EDITED') &&
+        !hasConfiguredAllowedValues(rule)
+    ).length;
     setRules((prev) =>
       prev.map((r) =>
         isRuleVisible(r) &&
+        hasConfiguredAllowedValues(r) &&
         (r.status === 'PENDING' ||
           r.status === 'DRAFT' ||
           r.status === 'EDITED')
@@ -606,7 +654,9 @@ export const RuleRecommenderPage = () => {
     notification.success({
       message: 'Batch Review',
       description:
-        'All pending rules for this table have been marked as Accepted.',
+        unconfiguredCount > 0
+          ? `${unconfiguredCount} Values In Set rule(s) were skipped because allowedValues are not configured.`
+          : 'All pending rules for this table have been marked as Accepted.',
     });
   };
 
@@ -615,6 +665,18 @@ export const RuleRecommenderPage = () => {
     const acceptedRules = rules.filter(
       (r) => isRuleVisible(r) && r.status === 'ACCEPTED'
     );
+    const unconfiguredRule = acceptedRules.find(
+      (rule) => !hasConfiguredAllowedValues(rule)
+    );
+    if (unconfiguredRule) {
+      notification.warning({
+        message: 'Allowed values required',
+        description:
+          'Configure allowedValues for every Values In Set rule before publishing.',
+      });
+
+      return;
+    }
     if (acceptedRules.length === 0) {
       notification.warning({
         message: 'No Accepted Rules',
@@ -682,16 +744,45 @@ export const RuleRecommenderPage = () => {
         ? rule.parameters.regex
         : '';
     setRegexEditValue(initialRegex);
+
+    // Initialize dynamic params from existing parameters
+    const existingParams = rule.parameters || {};
+    const initialDynamicParams: Array<{ key: string; value: string }> = [];
+    Object.entries(existingParams).forEach(([key, val]) => {
+      initialDynamicParams.push({ key, value: String(val) });
+    });
+    setDynamicParams(initialDynamicParams);
+
     editForm.setFieldsValue({
       reason: rule.reason,
       sql_expression: getRuleDisplaySql(rule),
-      rangeMin: rangeKeys ? rule.parameters?.[rangeKeys.min] : undefined,
-      rangeMax: rangeKeys ? rule.parameters?.[rangeKeys.max] : undefined,
-      minLength: rule.parameters?.minLength,
-      maxLength: rule.parameters?.maxLength,
-      parameters: JSON.stringify(rule.parameters || {}, null, 2),
+      rangeMin: rangeKeys ? existingParams[rangeKeys.min] : undefined,
+      rangeMax: rangeKeys ? existingParams[rangeKeys.max] : undefined,
+      minLength: existingParams.minLength,
+      maxLength: existingParams.maxLength,
     });
     setIsEditModalOpen(true);
+  };
+
+  // Add a new dynamic parameter
+  const handleAddParam = () => {
+    setDynamicParams([...dynamicParams, { key: '', value: '' }]);
+  };
+
+  // Remove a dynamic parameter
+  const handleRemoveParam = (index: number) => {
+    setDynamicParams(dynamicParams.filter((_, i) => i !== index));
+  };
+
+  // Update a dynamic parameter
+  const handleUpdateParam = (
+    index: number,
+    field: 'key' | 'value',
+    val: string
+  ) => {
+    const updated = [...dynamicParams];
+    updated[index][field] = val;
+    setDynamicParams(updated);
   };
 
   // Save edited rule
@@ -701,35 +792,31 @@ export const RuleRecommenderPage = () => {
         return;
       }
 
-      let parsedParams = { ...(editingRule.parameters || {}) };
+      let parsedParams: Record<string, unknown> = {};
       const rangeKeys = RANGE_PARAMETER_KEYS[editingRule.rule_type];
 
       if (rangeKeys) {
         parsedParams = {
-          ...parsedParams,
           [rangeKeys.min]: values.rangeMin,
           [rangeKeys.max]: values.rangeMax,
         };
       } else if (isLengthBetweenRule(editingRule.rule_type)) {
         parsedParams = {
-          ...parsedParams,
           minLength: values.minLength,
           maxLength: values.maxLength,
         };
       } else if (editingRule.rule_type === 'columnValuesToMatchRegex') {
-        parsedParams = { ...parsedParams, regex: regexEditValue };
-      } else if (!isCustomSqlRule(editingRule)) {
-        try {
-          parsedParams = JSON.parse(values.parameters || '{}');
-        } catch {
-          notification.error({
-            message: 'Invalid Parameters',
-            description: 'Parameters must be valid JSON.',
-          });
-
-          return;
-        }
+        parsedParams = { regex: regexEditValue };
       }
+
+      // Merge dynamic parameters
+      dynamicParams.forEach(({ key, value }) => {
+        if (key.trim()) {
+          // Try to parse value as number if possible
+          const numValue = Number(value);
+          parsedParams[key.trim()] = isNaN(numValue) ? value : numValue;
+        }
+      });
 
       const editedSql = isCustomSqlRule(editingRule)
         ? values.sql_expression?.trim()
@@ -1000,7 +1087,7 @@ export const RuleRecommenderPage = () => {
               </Text>
               {allowedValues.length === 0 ? (
                 <Text italic style={{ fontSize: 12 }} type="secondary">
-                  (empty set)
+                  Not configured. Use Edit parameters to enter allowedValues.
                 </Text>
               ) : (
                 <Space wrap size={4}>
@@ -1692,16 +1779,19 @@ export const RuleRecommenderPage = () => {
           destroyOnClose
           open={isEditModalOpen}
           title={`Edit Rule: ${editingRule?.rule_type}`}
+          width={600}
           onCancel={() => {
             setIsEditModalOpen(false);
             setEditingRule(null);
+            setDynamicParams([]);
           }}
           onOk={handleSaveEditedRule}
         >
           <Form form={editForm} layout="vertical">
             <Form.Item label="Inferred Rationale / Reason" name="reason">
-              <Input.TextArea rows={3} />
+              <Input.TextArea rows={2} />
             </Form.Item>
+
             {isCustomSqlRule(editingRule) && (
               <Form.Item
                 extra="Edit the SQL used to identify rows that violate this rule."
@@ -1716,23 +1806,19 @@ export const RuleRecommenderPage = () => {
                 ]}
               >
                 <Input.TextArea
-                  autoSize={{ minRows: 7, maxRows: 16 }}
+                  autoSize={{ minRows: 4, maxRows: 10 }}
                   className="rule-sql-editor"
                   placeholder="SELECT * FROM ... WHERE ..."
                   spellCheck={false}
                 />
               </Form.Item>
             )}
-            {editingRule && RANGE_PARAMETER_KEYS[editingRule.rule_type] ? (
+
+            {/* Rule-specific parameter fields */}
+            {editingRule && RANGE_PARAMETER_KEYS[editingRule.rule_type] && (
               <div className="rule-range-editor">
                 <Text strong className="rule-range-editor-title">
-                  Allowed value range
-                </Text>
-                <Text
-                  className="rule-range-editor-description"
-                  type="secondary"
-                >
-                  Values outside this inclusive range will fail the test.
+                  Value Range Parameters
                 </Text>
                 <Row gutter={12}>
                   <Col span={12}>
@@ -1740,24 +1826,8 @@ export const RuleRecommenderPage = () => {
                       dependencies={['rangeMax']}
                       label="Minimum value"
                       name="rangeMin"
-                      rules={[
-                        { required: true, message: 'Enter a minimum value.' },
-                        ({ getFieldValue }) => ({
-                          validator(_, value) {
-                            const maximum = getFieldValue('rangeMax');
-
-                            return value === undefined ||
-                              maximum === undefined ||
-                              value <= maximum
-                              ? Promise.resolve()
-                              : Promise.reject(
-                                  new Error('Minimum must not exceed maximum.')
-                                );
-                          },
-                        }),
-                      ]}
                     >
-                      <InputNumber className="w-full" placeholder="Minimum" />
+                      <InputNumber className="w-full" placeholder="Min" />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
@@ -1765,160 +1835,87 @@ export const RuleRecommenderPage = () => {
                       dependencies={['rangeMin']}
                       label="Maximum value"
                       name="rangeMax"
-                      rules={[
-                        { required: true, message: 'Enter a maximum value.' },
-                        ({ getFieldValue }) => ({
-                          validator(_, value) {
-                            const minimum = getFieldValue('rangeMin');
-
-                            return value === undefined ||
-                              minimum === undefined ||
-                              value >= minimum
-                              ? Promise.resolve()
-                              : Promise.reject(
-                                  new Error(
-                                    'Maximum must not be below minimum.'
-                                  )
-                                );
-                          },
-                        }),
-                      ]}
                     >
-                      <InputNumber className="w-full" placeholder="Maximum" />
+                      <InputNumber className="w-full" placeholder="Max" />
                     </Form.Item>
                   </Col>
                 </Row>
               </div>
-            ) : isLengthBetweenRule(editingRule?.rule_type) ? (
-              <div className="rule-range-editor">
-                <Text strong className="rule-range-editor-title">
-                  Allowed length range
-                </Text>
-                <Text
-                  className="rule-range-editor-description"
-                  type="secondary"
-                >
-                  Set the minimum and maximum number of characters, including
-                  both limits.
-                </Text>
-                <Row gutter={12}>
-                  <Col span={12}>
-                    <Form.Item
-                      dependencies={['maxLength']}
-                      label="Minimum length"
-                      name="minLength"
-                      rules={[
-                        { required: true, message: 'Enter a minimum length.' },
-                        ({ getFieldValue }) => ({
-                          validator(_, value) {
-                            const maximum = getFieldValue('maxLength');
+            )}
 
-                            return value === undefined ||
-                              maximum === undefined ||
-                              value <= maximum
-                              ? Promise.resolve()
-                              : Promise.reject(
-                                  new Error('Minimum must not exceed maximum.')
-                                );
-                          },
-                        }),
-                      ]}
-                    >
-                      <InputNumber
-                        className="w-full"
-                        min={0}
-                        placeholder="Minimum"
-                        precision={0}
-                      />
-                    </Form.Item>
-                  </Col>
-                  <Col span={12}>
-                    <Form.Item
-                      dependencies={['minLength']}
-                      label="Maximum length"
-                      name="maxLength"
-                      rules={[
-                        { required: true, message: 'Enter a maximum length.' },
-                        ({ getFieldValue }) => ({
-                          validator(_, value) {
-                            const minimum = getFieldValue('minLength');
-
-                            return value === undefined ||
-                              minimum === undefined ||
-                              value >= minimum
-                              ? Promise.resolve()
-                              : Promise.reject(
-                                  new Error(
-                                    'Maximum must not be below minimum.'
-                                  )
-                                );
-                          },
-                        }),
-                      ]}
-                    >
-                      <InputNumber
-                        className="w-full"
-                        min={0}
-                        placeholder="Maximum"
-                        precision={0}
-                      />
-                    </Form.Item>
-                  </Col>
-                </Row>
-              </div>
-            ) : editingRule?.rule_type === 'columnValuesToMatchRegex' ? (
-              <>
-                <Form.Item label={t('label.regex-pattern')}>
-                  <Select
-                    showSearch
-                    options={[
-                      {
-                        value:
-                          '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$',
-                        label: 'Email',
-                      },
-                      { value: '^https?://[^\\s/$.?#].[^\\s]*$', label: 'URL' },
-                      { value: '^\\+?[0-9 .\\-]{7,15}$', label: 'Phone' },
-                      {
-                        value:
-                          '^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$',
-                        label: 'IPv4',
-                      },
-                    ]}
-                    style={{ width: '100%' }}
-                    value={regexEditValue}
-                    onChange={(v) => {
-                      setRegexEditValue(v);
-                      editForm.setFieldValue(
-                        'parameters',
-                        JSON.stringify({ regex: v })
-                      );
-                    }}
-                  />
-                </Form.Item>
-                <Form.Item label={t('label.custom-regex')}>
-                  <Input
-                    placeholder="^[a-zA-Z0-9]+$"
-                    value={regexEditValue}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setRegexEditValue(v);
-                      editForm.setFieldValue(
-                        'parameters',
-                        JSON.stringify({ regex: v })
-                      );
-                    }}
-                  />
-                </Form.Item>
-              </>
-            ) : !isCustomSqlRule(editingRule) ? (
-              <Form.Item label={t('label.parameters-json')} name="parameters">
-                <Input.TextArea
-                  placeholder='{"minValue": 0, "maxValue": 100}'
-                  rows={4}
+            {editingRule?.rule_type === 'columnValuesToMatchRegex' && (
+              <Form.Item label="Regex Pattern">
+                <Input
+                  placeholder="^[a-zA-Z0-9]+$"
+                  value={regexEditValue}
+                  onChange={(e) => setRegexEditValue(e.target.value)}
                 />
               </Form.Item>
-            ) : null}
+            )}
+
+            {editingRule?.rule_type === 'columnValuesToBeInSet' && (
+              <Form.Item label="Allowed Values (comma-separated)">
+                <Input.TextArea
+                  placeholder="value1, value2, value3"
+                  rows={2}
+                />
+              </Form.Item>
+            )}
+
+            {/* Dynamic Parameters Section */}
+            <div className="dynamic-params-section">
+              <div className="dynamic-params-header">
+                <Text strong>Parameters</Text>
+                <Button
+                  icon={<PlusOutlined />}
+                  size="small"
+                  type="dashed"
+                  onClick={handleAddParam}
+                >
+                  Add Parameter
+                </Button>
+              </div>
+
+              {dynamicParams.length === 0 ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  No parameters. Click "Add Parameter" to add key-value pairs.
+                </Text>
+              ) : (
+                <div className="dynamic-params-list">
+                  {dynamicParams.map((param, index) => (
+                    <Row key={index} gutter={8} style={{ marginBottom: 8 }}>
+                      <Col span={8}>
+                        <Input
+                          placeholder="key"
+                          value={param.key}
+                          onChange={(e) =>
+                            handleUpdateParam(index, 'key', e.target.value)
+                          }
+                        />
+                      </Col>
+                      <Col span={14}>
+                        <Input
+                          placeholder="value"
+                          value={param.value}
+                          onChange={(e) =>
+                            handleUpdateParam(index, 'value', e.target.value)
+                          }
+                        />
+                      </Col>
+                      <Col span={2}>
+                        <Button
+                          danger
+                          icon={<DeleteOutlined />}
+                          size="small"
+                          type="text"
+                          onClick={() => handleRemoveParam(index)}
+                        />
+                      </Col>
+                    </Row>
+                  ))}
+                </div>
+              )}
+            </div>
           </Form>
         </Modal>
 
