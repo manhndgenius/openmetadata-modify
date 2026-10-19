@@ -268,6 +268,35 @@ describe('TestDefinitionList Component', () => {
     expect(deleteButtons).toHaveLength(4);
   });
 
+  it('does not expose NT rule configuration from the Test Library', async () => {
+    (getListTestDefinitions as jest.Mock).mockResolvedValueOnce({
+      data: [
+        ...mockTestDefinitions.data,
+        {
+          description: 'Checks table naming',
+          displayName: 'Table Naming Convention',
+          enabled: true,
+          entityType: 'TABLE',
+          fullyQualifiedName: 'NT1_TableNaming',
+          id: 'nt-test-def-1',
+          name: 'NT1_TableNaming',
+          provider: ProviderType.System,
+          testPlatforms: ['OpenMetadata'],
+        },
+      ],
+      paging: { total: 5 },
+    });
+
+    render(<TestDefinitionList />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByTestId('NT1_TableNaming')
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('configure-nt-rule-NT1_TableNaming')
+    ).not.toBeInTheDocument();
+  });
+
   it('should open form drawer when edit button is clicked', async () => {
     render(<TestDefinitionList />, { wrapper: MemoryRouter });
 

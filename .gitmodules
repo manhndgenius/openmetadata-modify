@@ -1,0 +1,3 @@
+[submodule "dq-rule-recommender-openmetadata"]
+	path = dq-rule-recommender-openmetadata
+	url = https://github.com/manhndgenius/dq-rule-recommender-openmetadata.git

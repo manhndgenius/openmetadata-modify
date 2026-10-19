@@ -496,7 +496,7 @@ const TestDefinitionList = () => {
       {
         title: t('label.action-plural'),
         key: 'actions',
-        width: 120,
+        width: 160,
         fixed: 'right',
         render: (_, record: TestDefinition) => {
           const isSystemProvider = record.provider === ProviderType.System;
@@ -554,7 +554,7 @@ const TestDefinitionList = () => {
         },
       },
     ],
-    [t, testDefinitionPermissions]
+    [t, testDefinitionPermissions, permissionLoading]
   );
 
   const handlePageChangeCallback = ({
@@ -621,7 +621,8 @@ const TestDefinitionList = () => {
                   <Button
                     data-testid="add-test-definition-button"
                     type="primary"
-                    onClick={() => setIsFormVisible(true)}>
+                    onClick={() => setIsFormVisible(true)}
+                  >
                     {t('label.add-entity', {
                       entity: t('label.test-definition'),
                     })}
@@ -636,14 +637,16 @@ const TestDefinitionList = () => {
           <Card
             bodyStyle={{
               padding: 0,
-            }}>
+            }}
+          >
             <Box
               sx={{
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 2,
                 p: 4,
-              }}>
+              }}
+            >
               <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
                 {quickFilters}
               </Box>

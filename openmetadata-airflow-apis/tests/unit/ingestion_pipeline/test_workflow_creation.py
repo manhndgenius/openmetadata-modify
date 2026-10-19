@@ -15,8 +15,9 @@ Validate metadata ingestion workflow generation
 import json
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from openmetadata_managed_apis.workflows.ingestion.lineage import (
     build_lineage_workflow_config,
@@ -28,7 +29,12 @@ from openmetadata_managed_apis.workflows.ingestion.profiler import (
     build_profiler_workflow_config,
 )
 from openmetadata_managed_apis.workflows.ingestion.test_suite import (
+    build_test_suite_dag,
     build_test_suite_workflow_config,
+)
+from openmetadata_managed_apis.workflows.ingestion.nt_rules import (
+    NTRulesExecutionError,
+    trigger_nt_rules,
 )
 from openmetadata_managed_apis.workflows.ingestion.usage import (
     build_usage_workflow_config,
@@ -41,6 +47,7 @@ from metadata.generated.schema.entity.services.databaseService import DatabaseSe
 from metadata.generated.schema.entity.services.ingestionPipelines.ingestionPipeline import (
     AirflowConfig,
     IngestionPipeline,
+    PipelineState,
     PipelineType,
 )
 from metadata.generated.schema.metadataIngestion.databaseServiceMetadataPipeline import (
@@ -348,3 +355,118 @@ class OMetaServiceTest(TestCase):
         config = json.loads(workflow_config.model_dump_json())
 
         parse_workflow_config_gracefully(config)
+
+        source = WorkflowSource(
+            type="testSuite",
+            serviceName=ingestion_pipeline.service.name,
+            sourceConfig=ingestion_pipeline.sourceConfig,
+            serviceConnection=None,
+        )
+        with patch(
+            "openmetadata_managed_apis.workflows.ingestion.test_suite.build_source",
+            return_value=source,
+        ):
+            dag = build_test_suite_dag(ingestion_pipeline)
+
+        assert set(dag.task_ids) == {"test_suite_task", "trigger_nt_rules"}
+        assert dag.get_task("test_suite_task").downstream_task_ids == {
+            "trigger_nt_rules"
+        }
+        nt_task = dag.get_task("trigger_nt_rules")
+        assert nt_task.retries == 0
+        assert nt_task.op_kwargs["table_fqn"] == self.service.name.root
+
+
+class NTRulesTaskTest(TestCase):
+    class Response:
+        def __init__(self, payload, status_code=200):
+            self.payload = payload
+            self.status_code = status_code
+            self.text = str(payload)
+
+        def json(self):
+            return self.payload
+
+    @patch.dict(
+        "os.environ",
+        {
+            "DQ_NT_BACKEND_URL": "http://dq-backend:8000",
+            "DQ_NT_POLL_INTERVAL_SECONDS": "0",
+            "DQ_NT_TIMEOUT_SECONDS": "10",
+        },
+        clear=False,
+    )
+    @patch("openmetadata_managed_apis.workflows.ingestion.nt_rules.time.sleep")
+    @patch("openmetadata_managed_apis.workflows.ingestion.nt_rules.requests.get")
+    @patch("openmetadata_managed_apis.workflows.ingestion.nt_rules.requests.post")
+    @patch(
+        "openmetadata_managed_apis.workflows.ingestion.nt_rules._set_pipeline_state"
+    )
+    def test_waits_until_nt_results_are_published(
+        self, set_state, post, get, _sleep
+    ):
+        workflow_config = SimpleNamespace()
+        set_state.side_effect = [PipelineState.success, PipelineState.running]
+        post.return_value = self.Response(
+            {"run_id": "run-1", "status": "PENDING"}, 202
+        )
+        get.side_effect = [
+            self.Response({"run_id": "run-1", "status": "RUNNING"}),
+            self.Response(
+                {
+                    "run_id": "run-1",
+                    "status": "SUCCESS",
+                    "outcome_counts": {"FAIL": 2, "WARNING": 1},
+                }
+            ),
+        ]
+
+        trigger_nt_rules(
+            workflow_config,
+            pipeline_id="pipeline-id",
+            table_fqn="service.db.schema.table",
+        )
+
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(
+            set_state.call_args_list,
+            [
+                call(workflow_config, PipelineState.running, finished=False),
+                call(workflow_config, PipelineState.success, finished=True),
+            ],
+        )
+
+    @patch.dict(
+        "os.environ",
+        {"DQ_NT_BACKEND_URL": "http://dq-backend:8000"},
+        clear=False,
+    )
+    @patch("openmetadata_managed_apis.workflows.ingestion.nt_rules.requests.post")
+    @patch(
+        "openmetadata_managed_apis.workflows.ingestion.nt_rules._set_pipeline_state"
+    )
+    def test_technical_failure_fails_the_airflow_task(self, set_state, post):
+        workflow_config = SimpleNamespace()
+        set_state.side_effect = [PipelineState.success, PipelineState.failed]
+        post.return_value = self.Response(
+            {
+                "run_id": "run-2",
+                "status": "PARTIAL",
+                "error_items": 1,
+                "skipped_items": 0,
+            },
+            202,
+        )
+
+        with self.assertRaisesRegex(NTRulesExecutionError, "ended with PARTIAL"):
+            trigger_nt_rules(
+                workflow_config,
+                pipeline_id="pipeline-id",
+                test_suite_fqn="logical-suite",
+                test_case_names=["case-a"],
+            )
+
+        self.assertEqual(
+            set_state.call_args_list[-1],
+            call(workflow_config, PipelineState.failed, finished=True),
+        )

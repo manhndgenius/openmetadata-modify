@@ -10,14 +10,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { PAGE_SIZE_BASE } from '../../../../constants/constants';
 import { useAirflowStatus } from '../../../../context/AirflowStatusProvider/AirflowStatusProvider';
 import { Table } from '../../../../generated/entity/data/table';
 import { IngestionPipeline } from '../../../../generated/entity/services/ingestionPipelines/ingestionPipeline';
-import { getIngestionPipelines } from '../../../../rest/ingestionPipelineAPI';
+import {
+  getIngestionPipelines,
+  triggerIngestionPipelineById,
+} from '../../../../rest/ingestionPipelineAPI';
 import TestSuitePipelineTab from './TestSuitePipelineTab.component';
 
 const mockTestSuite = {
@@ -99,8 +102,14 @@ jest.mock('../../../../rest/ingestionPipelineAPI', () => {
       .mockImplementation(() =>
         Promise.resolve({ data: mockPipelines, paging: mockPaging })
       ),
+    triggerIngestionPipelineById: jest.fn().mockResolvedValue({}),
   };
 });
+
+jest.mock('../../../../utils/ToastUtils', () => ({
+  showErrorToast: jest.fn(),
+  showSuccessToast: jest.fn(),
+}));
 
 jest.mock(
   '../../../../context/AirflowStatusProvider/AirflowStatusProvider',
@@ -157,6 +166,7 @@ jest.mock(
       ingestionData,
       onPageChange,
       pipelineTypeColumnObj,
+      triggerIngestion,
     }: {
       ingestionData: IngestionPipeline[];
       onPageChange: ({
@@ -173,6 +183,7 @@ jest.mock(
         width?: number;
         render?: (text: string, record: IngestionPipeline) => JSX.Element;
       }>;
+      triggerIngestion: (id: string, displayName: string) => Promise<void>;
     }) {
       return (
         <div data-testid="test-suite-pipeline-tab">
@@ -184,6 +195,17 @@ jest.mock(
           {ingestionData.map((pipeline) => (
             <div key={pipeline.id}>
               <div>{pipeline.name}</div>
+              <button
+                data-testid={`run-pipeline-${pipeline.id}`}
+                onClick={() =>
+                  triggerIngestion(
+                    pipeline.id ?? '',
+                    pipeline.displayName ?? pipeline.name
+                  )
+                }
+              >
+                Run
+              </button>
               {pipelineTypeColumnObj && (
                 <div data-testid={`test-case-count-${pipeline.name}`}>
                   {pipeline?.sourceConfig?.config?.testCases?.length ?? 'All'}
@@ -194,7 +216,8 @@ jest.mock(
           <button
             onClick={() =>
               onPageChange({ cursorType: 'after', currentPage: 2 })
-            }>
+            }
+          >
             Next Page
           </button>
         </div>
@@ -312,9 +335,7 @@ describe('TestSuite Pipeline component', () => {
       render(<TestSuitePipelineTab testSuite={mockTestSuite} />);
     });
 
-    expect(
-      screen.getByTestId('error-placeholder-ingestion')
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('error-placeholder-ingestion')).toBeInTheDocument();
   });
 
   it('should show loading state while fetching airflow status', async () => {
@@ -360,5 +381,17 @@ describe('TestSuite Pipeline component', () => {
     expect(columnHeader).toBeInTheDocument();
     expect(screen.getByTestId('mui-form-item-label')).toBeInTheDocument();
     expect(screen.getByTestId('mui-helper-icon')).toBeInTheDocument();
+  });
+
+  it('triggers the Airflow pipeline for a table suite when Run is clicked', async () => {
+    await act(async () => {
+      render(<TestSuitePipelineTab testSuite={mockTestSuite} />);
+    });
+
+    fireEvent.click(screen.getByTestId('run-pipeline-1'));
+
+    await waitFor(() => {
+      expect(triggerIngestionPipelineById).toHaveBeenCalledWith('1');
+    });
   });
 });

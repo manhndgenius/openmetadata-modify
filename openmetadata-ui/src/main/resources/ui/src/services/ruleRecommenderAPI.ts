@@ -43,7 +43,10 @@ export interface CandidateRule {
 }
 
 export type RuleEngine = 'BASIC' | 'ADVANCED' | 'STATISTICAL';
-export type GenerationScopeType = 'TABLE' | 'SCHEMA' | 'DATABASE';
+export type TargetScope =
+  | { type: 'TABLES'; table_fqns: string[] }
+  | { type: 'SCHEMAS'; schema_fqns: string[] }
+  | { type: 'DATABASE'; database_fqn: string };
 export type GenerationJobStatus =
   | 'PENDING'
   | 'RUNNING'
@@ -64,8 +67,8 @@ export interface CatalogOption {
 }
 
 export interface BulkGenerationRequest {
-  scope: { type: GenerationScopeType; target_fqn: string };
-  engines: RuleEngine[];
+  scope: TargetScope;
+  engines: ['BASIC'];
   options?: {
     use_llm?: boolean;
     min_confidence?: number;
@@ -75,13 +78,11 @@ export interface BulkGenerationRequest {
   concurrency?: {
     metadata: number;
     basic: number;
-    statistical: number;
-    advanced: number;
   };
 }
 
 export interface BulkGenerationPreview {
-  scope: { type: GenerationScopeType; target_fqn: string };
+  scope: TargetScope;
   total_tables: number;
   tables: string[];
   total_items: number;
@@ -91,7 +92,7 @@ export interface BulkGenerationPreview {
 export interface GenerationJobSummary {
   job_id: string;
   source_job_id?: string | null;
-  scope: { type: GenerationScopeType; target_fqn: string };
+  scope: TargetScope;
   engines: RuleEngine[];
   status: GenerationJobStatus;
   total_tables: number;
@@ -128,6 +129,53 @@ export interface GenerationJobResults {
   total: number;
   total_pages: number;
   items: GenerationJobItem[];
+}
+
+export interface TargetScopePreview {
+  scope: TargetScope;
+  total_tables: number;
+  tables: string[];
+}
+
+export interface NtApplicationPreview extends TargetScopePreview {
+  definitions_per_table: number;
+  maximum_test_cases: number;
+}
+
+export interface NtApplicationJobSummary {
+  job_id: string;
+  scope: TargetScope;
+  status: GenerationJobStatus;
+  total_tables: number;
+  processed_tables: number;
+  successful_tables: number;
+  partial_tables: number;
+  failed_tables: number;
+  created_count: number;
+  skipped_count: number;
+  failed_count: number;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface NtApplicationJobItem {
+  item_id: string;
+  table_fqn: string;
+  status: GenerationJobItemStatus;
+  created_count: number;
+  skipped_count: number;
+  failed_count: number;
+  errors: Array<{ message?: string; definition?: string; error?: string }>;
+}
+
+export interface NtApplicationJobResults {
+  job_id: string;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  items: NtApplicationJobItem[];
 }
 
 export interface AdvancedRuleResponse {
@@ -199,6 +247,90 @@ export interface NtGovernanceStatus {
   applied_count: number;
   not_applied_count: number;
   data: NtTestDefinition[];
+}
+
+export type NtRunStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCESS'
+  | 'PARTIAL'
+  | 'FAILED';
+
+export interface NtRunSummary {
+  run_id: string;
+  source_run_id?: string | null;
+  table_fqn: string;
+  pipeline_id?: string | null;
+  status: NtRunStatus;
+  total_items: number;
+  processed_items: number;
+  completed_items: number;
+  error_items: number;
+  skipped_items: number;
+  outcome_counts: Record<string, number>;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export type NtRuleConfig = Record<string, unknown>;
+export type NtRuleConfigMap = Record<string, NtRuleConfig>;
+export type NtRuleConfigControl =
+  | 'REGEX'
+  | 'TEXT'
+  | 'TAG_LIST'
+  | 'REGEX_LIST'
+  | 'MULTI_SELECT'
+  | 'BOOLEAN'
+  | 'NUMBER'
+  | 'SELECT'
+  | 'EDITABLE_MAPPING';
+
+export interface NtRuleConfigField {
+  name: string;
+  label: string;
+  control: NtRuleConfigControl;
+  options?: string[];
+  allowCustom?: boolean;
+  optional?: boolean;
+  disabled?: boolean;
+  minimum?: number;
+  maximum?: number;
+  integer?: boolean;
+  columns?: Array<{
+    name: string;
+    control: 'TEXT' | 'TAG_LIST';
+  }>;
+}
+
+export interface NtRuleConfigRule {
+  name: string;
+  display_name: string;
+  configurable: boolean;
+  fields: NtRuleConfigField[];
+  defaults: NtRuleConfig;
+}
+
+export interface NtRuleConfigSchema {
+  version: number;
+  rules: NtRuleConfigRule[];
+}
+
+export interface NtRuleConfigState {
+  rule_name: string;
+  config: NtRuleConfig;
+  override: NtRuleConfig;
+  enabled: boolean;
+  version: number;
+  persisted: boolean;
+  updated_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface NtRuleConfigListResponse {
+  total: number;
+  data: NtRuleConfigState[];
 }
 
 export const FALLBACK_NT_DEFINITIONS: NtTestDefinition[] = [
@@ -497,6 +629,24 @@ export const ruleRecommenderAPI = {
     }));
   },
 
+  async previewTargetScope(scope: TargetScope): Promise<TargetScopePreview> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/target-scopes/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      }
+    );
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(error.detail || `Target preview failed: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
   async previewGenerationJob(
     request: BulkGenerationRequest
   ): Promise<BulkGenerationPreview> {
@@ -587,6 +737,103 @@ export const ruleRecommenderAPI = {
     };
   },
 
+  async previewNtApplicationJob(
+    scope: TargetScope
+  ): Promise<NtApplicationPreview> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-application-jobs/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      }
+    );
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(
+        error.detail || `NT application preview failed: ${res.status}`
+      );
+    }
+
+    return res.json();
+  },
+
+  async startNtApplicationJob(
+    scope: TargetScope
+  ): Promise<NtApplicationJobSummary> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-application-jobs`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      }
+    );
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(error.detail || `Cannot start NT job: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  async getNtApplicationJob(
+    jobId: string
+  ): Promise<NtApplicationJobSummary> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-application-jobs/${encodeURIComponent(
+        jobId
+      )}`
+    );
+    if (!res.ok) {
+      throw new Error(`Cannot load NT application job: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  async getNtApplicationJobResults(
+    jobId: string,
+    pageSize = 200
+  ): Promise<NtApplicationJobResults> {
+    const loadPage = async (page: number): Promise<NtApplicationJobResults> => {
+      const params = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+      });
+      const res = await fetch(
+        `${getRecommenderBaseUrl()}/nt-application-jobs/${encodeURIComponent(
+          jobId
+        )}/results?${params.toString()}`
+      );
+      if (!res.ok) {
+        throw new Error(`Cannot load NT application results: ${res.status}`);
+      }
+
+      return res.json();
+    };
+    const firstPage = await loadPage(1);
+    if (firstPage.total_pages <= 1) {
+      return firstPage;
+    }
+    const remainingPages = await Promise.all(
+      Array.from({ length: firstPage.total_pages - 1 }, (_, index) =>
+        loadPage(index + 2)
+      )
+    );
+
+    return {
+      ...firstPage,
+      page_size: firstPage.total,
+      items: [
+        ...firstPage.items,
+        ...remainingPages.flatMap((result) => result.items),
+      ],
+    };
+  },
+
   async retryGenerationJob(
     jobId: string,
     tableFqns?: string[],
@@ -644,6 +891,7 @@ export const ruleRecommenderAPI = {
         };
       });
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.warn('Failed to fetch tables from OpenMetadata:', err);
 
       return [];
@@ -681,6 +929,7 @@ export const ruleRecommenderAPI = {
         }
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.warn(
         'Fetch rules from backend failed, generating fallback:',
         err
@@ -730,6 +979,7 @@ export const ruleRecommenderAPI = {
         }
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.warn('Backend recommendation error:', err);
     }
 
@@ -1171,6 +1421,7 @@ export const ruleRecommenderAPI = {
         await axiosClient.put('/dataQuality/testCases', payload);
         publishedCount++;
       } catch (err: any) {
+        // eslint-disable-next-line no-console
         console.warn(`Failed to publish test case for ${rule.rule_type}:`, err);
         failures.push(rule.rule_type);
       }
@@ -1210,6 +1461,126 @@ export const ruleRecommenderAPI = {
     // Caller is expected to have the rules list already in state; this method
     // is a no-op (returns 0) until we wire it to local state.
     return 0;
+  },
+
+  /** Start the metadata-only NT evaluators for a table. */
+  async startNtRun(
+    tableFqn: string,
+    pipelineId?: string
+  ): Promise<NtRunSummary> {
+    const res = await fetch(`${getRecommenderBaseUrl()}/nt-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_fqn: tableFqn,
+        pipeline_id: pipelineId,
+      }),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(error.detail || `Cannot start NT run: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  /** Load the versioned dynamic-form schema for metadata-only NT rules. */
+  async getNtRuleConfigSchema(): Promise<NtRuleConfigSchema> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-rules/config-schema`
+    );
+    if (!res.ok) {
+      throw new Error(`Cannot load NT rule configuration: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  /** Load all effective NT configs from PostgreSQL. */
+  async getNtRuleConfigs(): Promise<NtRuleConfigListResponse> {
+    const res = await fetch(`${getRecommenderBaseUrl()}/nt-rules/configs`);
+    if (!res.ok) {
+      throw new Error(`Cannot load NT rule configurations: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  /** Load one effective NT config and its optimistic-lock version. */
+  async getNtRuleConfig(ruleName: string): Promise<NtRuleConfigState> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config`
+    );
+    if (!res.ok) {
+      throw new Error(`Cannot load NT rule configuration: ${res.status}`);
+    }
+
+    return res.json();
+  },
+
+  /** Persist one NT config using optimistic locking. */
+  async updateNtRuleConfig(
+    ruleName: string,
+    config: NtRuleConfig,
+    expectedVersion: number,
+    enabled = true
+  ): Promise<NtRuleConfigState> {
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config,
+          enabled,
+          expected_version: expectedVersion,
+        }),
+      }
+    );
+    if (!res.ok) {
+      if (res.status === 409) {
+        throw new Error(
+          'This configuration was changed by another user. Reload and try again.'
+        );
+      }
+      const error = await res.json().catch(() => undefined);
+      const detail = error?.detail;
+      const message =
+        typeof detail === 'string'
+          ? detail
+          : detail?.errors?.join('; ') ??
+            `Cannot save NT rule configuration: ${res.status}`;
+
+      throw new Error(message);
+    }
+
+    return res.json();
+  },
+
+  /** Delete an override so the rule falls back to backend defaults. */
+  async deleteNtRuleConfig(
+    ruleName: string,
+    expectedVersion: number
+  ): Promise<NtRuleConfigState> {
+    const query = new URLSearchParams({
+      expected_version: String(expectedVersion),
+    });
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config?${query}`,
+      { method: 'DELETE' }
+    );
+    if (!res.ok) {
+      if (res.status === 409) {
+        throw new Error(
+          'This configuration was changed by another user. Reload and try again.'
+        );
+      }
+
+      throw new Error(`Cannot reset NT rule configuration: ${res.status}`);
+    }
+
+    return res.json();
   },
 
   /**
@@ -1261,123 +1632,25 @@ export const ruleRecommenderAPI = {
    * Create the 15 default NT governance test cases for a table in one shot
    */
   async createDefaultTestCases(tableFqn: string): Promise<NtGovernanceSummary> {
-    try {
-      const encodedFqn = encodeURIComponent(tableFqn);
-      const res = await fetch(
-        `${getRecommenderBaseUrl()}/tables/${encodedFqn}/test-cases/default`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        }
+    const encodedFqn = encodeURIComponent(tableFqn);
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/tables/${encodedFqn}/test-cases/default`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(
+        error.detail || `Cannot create NT Test Cases: ${res.status}`
       );
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // Backend offline: simulate creation
     }
 
-    const tableName = tableFqn.split('.').pop() || tableFqn;
-
-    return {
-      created_count: 12,
-      skipped_count: 3,
-      failed_count: 0,
-      test_cases: FALLBACK_NT_DEFINITIONS.slice(0, 12).map((d) => ({
-        name: `${tableName}_${d.name}`,
-        testDefinition: d.name,
-        id: `tc-${tableName}-${d.name}`,
-        fullyQualifiedName: `${tableFqn}.${d.name}`,
-        status: 'SUCCESS',
-      })),
-      skipped: FALLBACK_NT_DEFINITIONS.slice(12, 15).map((d) => ({
-        definition: d.name,
-        reason: 'Rule already exists or column profile criteria not applicable',
-      })),
-      failed: [],
-    };
+    return res.json();
   },
 
-  /**
-   * Batch apply default NT governance test cases across multiple tables or entire schema
-   */
-  async createDefaultTestCasesBatch(
-    tableFqns: string[],
-    onProgress?: (processed: number, total: number, currentTable: string) => void
-  ): Promise<{
-    total_tables: number;
-    successful_tables: number;
-    failed_tables: number;
-    created_count: number;
-    skipped_count: number;
-    failed_count: number;
-    table_summaries: Array<{
-      tableFqn: string;
-      tableName: string;
-      summary: NtGovernanceSummary;
-      status: 'SUCCESS' | 'FAILED';
-    }>;
-  }> {
-    const tableSummaries: Array<{
-      tableFqn: string;
-      tableName: string;
-      summary: NtGovernanceSummary;
-      status: 'SUCCESS' | 'FAILED';
-    }> = [];
-
-    let totalCreated = 0;
-    let totalSkipped = 0;
-    let totalFailed = 0;
-    let successTables = 0;
-    let failedTables = 0;
-
-    for (let i = 0; i < tableFqns.length; i++) {
-      const fqn = tableFqns[i];
-      const tableName = fqn.split('.').pop() || fqn;
-      if (onProgress) {
-        onProgress(i + 1, tableFqns.length, tableName);
-      }
-      try {
-        const summary = await this.createDefaultTestCases(fqn);
-        tableSummaries.push({
-          tableFqn: fqn,
-          tableName,
-          summary,
-          status: 'SUCCESS',
-        });
-        totalCreated += summary.created_count;
-        totalSkipped += summary.skipped_count;
-        totalFailed += summary.failed_count;
-        successTables += 1;
-      } catch (e) {
-        failedTables += 1;
-        tableSummaries.push({
-          tableFqn: fqn,
-          tableName,
-          summary: {
-            created_count: 0,
-            skipped_count: 0,
-            failed_count: 15,
-            test_cases: [],
-            skipped: [],
-            failed: [{ definition: 'all', reason: String(e) }],
-          },
-          status: 'FAILED',
-        });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-
-    return {
-      total_tables: tableFqns.length,
-      successful_tables: successTables,
-      failed_tables: failedTables,
-      created_count: totalCreated,
-      skipped_count: totalSkipped,
-      failed_count: totalFailed,
-      table_summaries: tableSummaries,
-    };
-  },
 
   /**
    * List test cases that already exist on a table via the recommender backend

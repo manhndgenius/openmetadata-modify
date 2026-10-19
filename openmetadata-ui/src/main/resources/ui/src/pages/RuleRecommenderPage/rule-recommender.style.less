@@ -424,4 +424,59 @@
   }
 }
 
+.candidate-rules-loading-state {
+  min-height: 360px;
+  padding: 60px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
 
+  .ant-spin-dot {
+    font-size: 44px;
+  }
+
+  &__heading {
+    max-width: 720px;
+    text-align: center;
+    animation: candidate-step-enter 0.25s ease-out;
+
+    h4.ant-typography {
+      margin: 8px 0 6px;
+    }
+  }
+
+  &__table {
+    font-size: 12px;
+  }
+
+  &__description {
+    display: block;
+    color: #64748b;
+  }
+
+  &__result {
+    display: block;
+    margin-top: 6px;
+    color: #52c41a;
+  }
+}
+
+@keyframes candidate-step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .candidate-rules-loading-state {
+    padding: 32px 20px;
+  }
+}

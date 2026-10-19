@@ -23,6 +23,12 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__OPENMETADATA_AIRFLOW_APIS__DAG_GENERATED_CONFIGS: "/opt/airflow/dag_generated_configs"
+      # NT rules are executed by the external DQ backend after built-in tests.
+      DQ_NT_BACKEND_URL: ${DQ_NT_BACKEND_URL:-}
+      DQ_NT_BACKEND_TOKEN: ${DQ_NT_BACKEND_TOKEN:-}
+      DQ_NT_REQUEST_TIMEOUT_SECONDS: ${DQ_NT_REQUEST_TIMEOUT_SECONDS:-30}
+      DQ_NT_POLL_INTERVAL_SECONDS: ${DQ_NT_POLL_INTERVAL_SECONDS:-2}
+      DQ_NT_TIMEOUT_SECONDS: ${DQ_NT_TIMEOUT_SECONDS:-3600}
       DB_HOST: ${AIRFLOW_DB_HOST:-mysql}
       DB_PORT: ${AIRFLOW_DB_PORT:-3306}
       AIRFLOW_DB: ${AIRFLOW_DB:-airflow_db}
