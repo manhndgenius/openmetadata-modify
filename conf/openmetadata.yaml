@@ -179,11 +179,17 @@ logging:
           archivedFileCount: 7
           timeZone: UTC
           maxFileSize: 50MB
+    org.openmetadata.service.audit.AuditLogRepository:
+      # Audit entries are logged at INFO with the AUDIT marker (see AuditLogger) and routed to
+      # logs/audit.log. Pin the level so audit capture does not depend on the global LOG_LEVEL.
+      level: INFO
   appenders:
     - type: console
       threshold: TRACE
       logFormat: "%level [%d{ISO8601,UTC}] [%t] %logger{5} - %msg%n"
       timeZone: UTC
+      filterFactories:
+        - type: audit-exclude-filter-factory
     - type: file
       layout:
         type: json
@@ -454,6 +460,7 @@ elasticsearch:
     enabled: ${NATURAL_LANGUAGE_SEARCH_ENABLED:-false}
     semanticSearchEnabled: ${SEMANTIC_SEARCH_ENABLED:-false}
     embeddingProvider: ${EMBEDDING_PROVIDER:-bedrock} # Options: "openai", "bedrock", "djl"
+    maxConcurrentEmbeddingRequests: ${MAX_CONCURRENT_EMBEDDING_REQUESTS:-10}
     providerClass: ${NATURAL_LANGUAGE_SEARCH_PROVIDER_CLASS:-org.openmetadata.service.search.nlq.NoOpNLQService}
     bedrock:
       awsConfig:
@@ -641,7 +648,8 @@ web:
     block: ${WEB_CONF_XSS_PROTECTION_BLOCK:-true}
   csp:
     enabled: ${WEB_CONF_XSS_CSP_ENABLED:-false}
-    policy: ${WEB_CONF_XSS_CSP_POLICY:-"default-src 'self'; base-uri 'self'; script-src 'self' 'nonce-__CSP_NONCE__' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * 'self' blob: data:; media-src * 'self' blob:; worker-src 'self' blob:; frame-src 'self' https://www.youtube.com; object-src 'none'; connect-src 'self';"}
+    # default-src 'self'; base-uri 'self'; script-src 'self' 'nonce-__CSP_NONCE__' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * 'self' blob: data:; media-src * 'self' blob:; worker-src 'self' blob:; frame-src 'self' https://www.youtube.com; object-src 'none'; connect-src 'self';
+    policy: ${WEB_CONF_XSS_CSP_POLICY:-""}
     reportOnlyPolicy: ${WEB_CONF_XSS_CSP_REPORT_ONLY_POLICY:-""}
   referrer-policy:
     enabled: ${WEB_CONF_REFERRER_POLICY_ENABLED:-false}

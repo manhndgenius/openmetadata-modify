@@ -44,6 +44,23 @@ export const visitUserListPage = async (page: Page) => {
   await fetchUsers;
 };
 
+export const searchUserByEmail = async (
+  page: Page,
+  email: string,
+  userName: string
+) => {
+  await waitForAllLoadersToDisappear(page);
+
+  const searchResponse = page.waitForResponse(
+    '/api/v1/search/query?q=*&index=*&from=0&size=*'
+  );
+  await page.getByTestId('searchbar').fill(email);
+  await searchResponse;
+  await waitForAllLoadersToDisappear(page);
+
+  await expect(page.getByTestId(userName)).toBeVisible();
+};
+
 export const performUserLogin = async (browser: Browser, user: UserClass) => {
   const page = await browser.newPage();
   await user.login(page);
@@ -429,7 +446,7 @@ export const permanentDeleteUser = async (
     // initialization effect before switching, otherwise the click races
     // with setFieldsValue and the selection gets clobbered.
     await page
-      .locator('[data-testid="soft-delete"].ant-radio-wrapper-checked')
+      .locator('.ant-radio-wrapper-checked [data-testid="soft-delete"]')
       .waitFor();
   }
 
@@ -635,7 +652,7 @@ export const checkStewardPermissions = async (page: Page) => {
   await page
     .getByRole('cell', { name: /user_id/i })
     .getByTestId('edit-displayName-button')
-    .waitFor({ state: 'attached'});
+    .waitFor({ state: 'attached' });
 
   // Check edit owner permission
   await expect(page.locator('[data-testid="edit-owner"]')).toBeVisible();
@@ -690,7 +707,7 @@ export const addUser = async (
   await waitForAllLoadersToDisappear(page);
   await page.click('[data-testid="add-user"]');
 
-  await page.waitForResponse('/api/v1/roles?default=false&limit=100&fields=');
+  await page.waitForResponse('/api/v1/roles/search?*');
   await page.fill('[data-testid="email"]', email);
 
   await page.fill('[data-testid="displayName"]', name);
@@ -701,11 +718,14 @@ export const addUser = async (
   await page.fill('#password', password);
   await page.fill('#confirmPassword', password);
 
-  await page.click('[data-testid="roles-dropdown"] > .ant-select-selector');
-  await page.getByTestId('roles-dropdown').getByRole('combobox').fill(role);
-  await page.waitForSelector('.ant-select-dropdown:visible', {
-    state: 'visible',
-  });
+  const rolesCombobox = page
+    .getByTestId('roles-dropdown')
+    .getByRole('combobox');
+  await expect(rolesCombobox).toBeVisible({ timeout: 120000 });
+  await rolesCombobox.click();
+  const rolesSearchResponse = page.waitForResponse('/api/v1/roles/search?*');
+  await rolesCombobox.fill(role);
+  await rolesSearchResponse;
   const roleOption = page
     .locator('.ant-select-dropdown:visible')
     .locator('.ant-select-item-option')

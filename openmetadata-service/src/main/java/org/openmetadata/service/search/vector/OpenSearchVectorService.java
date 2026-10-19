@@ -82,13 +82,11 @@ public class OpenSearchVectorService implements VectorIndexService {
   }
 
   public void close() {
-    try {
-      if (client != null && client._transport() != null) {
-        client._transport().close();
-      }
-    } catch (Exception e) {
-      LOG.warn("Error closing OpenSearch transport: {}", e.getMessage());
-    }
+    // No-op by design. The opensearch-java client stored here was constructed
+    // elsewhere and its transport is shared with OpenSearchClient and every
+    // other manager. Closing the transport from here permanently shuts down
+    // the HC5 IOReactor for the whole application, which was a root cause of
+    // production "I/O reactor has been shut down" errors.
   }
 
   @Override
@@ -314,8 +312,19 @@ public class OpenSearchVectorService implements VectorIndexService {
         return false;
       }
 
+      int expectedDimension = embeddingClient != null ? embeddingClient.getDimension() : -1;
       List<Map<String, Object>> docs = new ArrayList<>();
       for (JsonNode hit : hits) {
+        // A dimension change (e.g. switching embedding model/dimension) does not change the entity
+        // fingerprint, so the migration path can be reached with stale-dimension vectors. Copying a
+        // source vector whose length no longer matches the active client dimension into an index
+        // built for the new dimension is silently rejected by the knn field, leaving the entity
+        // unembedded. Bail out so the caller re-embeds at the current dimension.
+        JsonNode embedding = hit.path("_source").path("embedding");
+        if (expectedDimension > 0
+            && (!embedding.isArray() || embedding.size() != expectedDimension)) {
+          return false;
+        }
         Map<String, Object> source = MAPPER.convertValue(hit.path("_source"), Map.class);
         source.put("fingerprint", fingerprint);
         docs.add(source);

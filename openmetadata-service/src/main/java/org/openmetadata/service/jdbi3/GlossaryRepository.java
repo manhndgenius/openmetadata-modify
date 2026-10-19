@@ -520,6 +520,7 @@ public class GlossaryRepository extends EntityRepository<Glossary> {
       newAbout = new MessageParser.EntityLink(GLOSSARY_TERM, child.getFullyQualifiedName());
       daoCollection.feedDAO().updateByEntityId(newAbout.getLinkString(), child.getId().toString());
     }
+    repointWorkflowInstancesForFqnChange(GLOSSARY_TERM, oldFqn, newFqn);
   }
 
   private List<GlossaryTerm> getAllTerms(Glossary glossary) {
@@ -589,6 +590,12 @@ public class GlossaryRepository extends EntityRepository<Glossary> {
           condition ->
               PolicyConditionUpdater.renamePrefixInCondition(
                   condition, oldFqn, newFqn, PolicyConditionUpdater.TAG_FUNCTIONS));
+
+      // Cascade rename into the search index — child term FQNs and the embedded glossary denorm
+      // (glossary.name / glossary.fullyQualifiedName) must reflect the new name. This used to be
+      // driven by entityRelationshipReindex, which has no caller since PR #19550, so the call has
+      // to happen inline here (mirroring Domain / Classification / GlossaryTerm renames).
+      updateAssetIndexes(original, updated);
     }
 
     public void invalidateGlossary(UUID classificationId) {

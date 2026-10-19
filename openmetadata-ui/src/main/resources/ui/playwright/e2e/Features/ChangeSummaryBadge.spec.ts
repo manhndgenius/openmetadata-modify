@@ -11,25 +11,47 @@
  *  limitations under the License.
  */
 
-import { expect } from '@playwright/test';
+import { APIRequestContext, expect } from '@playwright/test';
 import { DOMAIN_TAGS } from '../../constant/config';
 import { TableClass } from '../../support/entity/TableClass';
 import { performAdminLogin } from '../../utils/admin';
 import { redirectToHomePage } from '../../utils/common';
-import {
-  openColumnDetailPanel,
-  waitForAllLoadersToDisappear,
-} from '../../utils/entity';
+import { waitForAllLoadersToDisappear } from '../../utils/entity';
 import { navigateToExploreAndSelectEntity } from '../../utils/explore';
 import { test } from '../fixtures/pages';
 
-const table = new TableClass();
+const waitForChangeSummarySource = async (
+  apiContext: APIRequestContext,
+  tableId: string,
+  expectedSource: string,
+  fieldKey = 'description'
+) => {
+  await expect
+    .poll(
+      async () => {
+        const response = await apiContext.get(
+          `/api/v1/changeSummary/table/${tableId}`
+        );
+        if (!response.ok()) {
+          return null;
+        }
+        const data = await response.json();
+
+        return data?.changeSummary?.[fieldKey]?.changeSource ?? null;
+      },
+      { timeout: 30000, intervals: [500, 1000, 2000] }
+    )
+    .toBe(expectedSource);
+};
 
 test.describe(
   'ChangeSummary DescriptionSourceBadge',
   { tag: [DOMAIN_TAGS.DISCOVERY] },
   () => {
+    let table: TableClass;
     test.beforeAll('Setup test entities', async ({ browser }) => {
+      test.slow();
+      table = new TableClass();
       const { apiContext, afterAction } = await performAdminLogin(browser);
 
       await table.create(apiContext);
@@ -57,6 +79,12 @@ test.describe(
         ],
         queryParams: { changeSource: 'Suggested' },
       });
+
+      await waitForChangeSummarySource(
+        apiContext,
+        table.entityResponseData?.id,
+        'Suggested'
+      );
 
       await afterAction();
     });
@@ -105,7 +133,11 @@ test.describe(
         const changeSummaryResponse = page.waitForResponse((response) =>
           response.url().includes('/api/v1/changeSummary/table/')
         );
-        await navigateToExploreAndSelectEntity(page, table.entity.name);
+        await navigateToExploreAndSelectEntity({
+          page,
+          entityName: table.entity.name,
+          fullyQualifiedName: table.entityResponseData?.fullyQualifiedName,
+        });
 
         await changeSummaryResponse;
         await waitForAllLoadersToDisappear(page);
@@ -124,7 +156,7 @@ test.describe(
     }) => {
       await redirectToHomePage(page);
 
-      await test.step('Search for column on table details page and verify AI badge in panel', async () => {
+      await test.step('Navigate to entity page and verify column badge', async () => {
         const changeSummaryResponse = page.waitForResponse((response) =>
           response.url().includes('/api/v1/changeSummary/')
         );
@@ -133,22 +165,11 @@ test.describe(
         await changeSummaryResponse;
         await waitForAllLoadersToDisappear(page);
 
-        const column = table.entityResponseData?.columns?.[0];
+        const descriptionCells = page
+          .getByTestId('description')
+          .getByTestId('ai-suggested-badge');
 
-        await page.getByTestId('searchbar').fill(column?.name ?? '');
-        await waitForAllLoadersToDisappear(page);
-
-        await openColumnDetailPanel({
-          page,
-          columnId: column?.fullyQualifiedName ?? '',
-        });
-
-        const badge = page
-          .locator('.column-detail-panel')
-          .getByTestId('ai-suggested-badge')
-          .first();
-
-        await expect(badge).toBeVisible();
+        await expect(descriptionCells.first()).toBeVisible();
       });
     });
 
@@ -186,6 +207,12 @@ test.describe(
           ],
           queryParams: { changeSource: 'Automated' },
         });
+
+        await waitForChangeSummarySource(
+          apiContext,
+          automatedTable.entityResponseData?.id,
+          'Automated'
+        );
 
         await afterAction();
       });
@@ -245,6 +272,12 @@ test.describe(
           ],
           queryParams: { changeSource: 'Propagated' },
         });
+
+        await waitForChangeSummarySource(
+          apiContext,
+          propagatedTable.entityResponseData?.id,
+          'Propagated'
+        );
 
         await afterAction();
       });

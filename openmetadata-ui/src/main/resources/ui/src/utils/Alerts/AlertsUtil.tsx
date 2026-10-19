@@ -58,6 +58,7 @@ import { ReactComponent as SlackIcon } from '../../assets/svg/slack.svg';
 import { ReactComponent as WebhookIcon } from '../../assets/svg/webhook.svg';
 import { AlertEventDetailsToDisplay } from '../../components/Alerts/AlertDetails/AlertRecentEventsTab/AlertRecentEventsTab.interface';
 import TeamAndUserSelectItem from '../../components/Alerts/DestinationFormItem/TeamAndUserSelectItem/TeamAndUserSelectItem';
+import FQNListSelect from '../../components/Alerts/FQNListSelect/FQNListSelect.component';
 import { AsyncSelect } from '../../components/common/AsyncSelect/AsyncSelect';
 import {
   DATA_CONTRACT_STATUS_OPTIONS,
@@ -68,6 +69,7 @@ import {
   EXTERNAL_CATEGORY_OPTIONS,
 } from '../../constants/Alerts.constants';
 import { PAGE_SIZE_LARGE } from '../../constants/constants';
+import { UUID_REGEX } from '../../constants/regex.constants';
 import { OPEN_METADATA } from '../../constants/Services.constant';
 import { AlertRecentEventFilters } from '../../enums/Alerts.enum';
 import { SearchIndex } from '../../enums/search.enum';
@@ -207,12 +209,14 @@ export const searchEntity = async ({
   queryFilter,
   showDisplayNameAsLabel = true,
   setSourceAsValue = false,
+  wildcardEntityTypes,
 }: {
   searchText: string;
   searchIndex: SearchIndex | SearchIndex[];
   queryFilter?: Record<string, unknown>;
   showDisplayNameAsLabel?: boolean;
   setSourceAsValue?: boolean;
+  wildcardEntityTypes?: string[];
 }) => {
   try {
     const response = await searchQuery({
@@ -233,6 +237,13 @@ export const searchEntity = async ({
           ? getEntityName(d._source)
           : d._source.fullyQualifiedName ?? '';
 
+        // Container options (a type that has in-scope descendants) show a display-only ".*" hint
+        // to convey "matches everything under this FQN"; the stored value stays the plain FQN.
+        const isContainerOption =
+          !!d._source.entityType &&
+          (wildcardEntityTypes ?? []).includes(d._source.entityType);
+        const label = isContainerOption ? `${displayName}.*` : displayName;
+
         const value = setSourceAsValue
           ? JSON.stringify({
               ...d._source,
@@ -241,7 +252,7 @@ export const searchEntity = async ({
           : d._source.fullyQualifiedName ?? '';
 
         return {
-          label: displayName,
+          label,
           value,
         };
       }),
@@ -257,6 +268,25 @@ export const searchEntity = async ({
 
     return [];
   }
+};
+
+// Indexes to search for an Entity FQN filter: the source plus its ancestor (container) entity
+// types from the resource descriptor, so a parent FQN can be selected to scope to its descendants.
+export const getFqnSearchIndexes = (
+  selectedTrigger: string,
+  containerEntities: string[] = []
+): SearchIndex[] => {
+  const mapping = searchClassBase.getEntityTypeSearchIndexMapping();
+  const sourceIndex = mapping[selectedTrigger];
+
+  // The "all" index already spans every entity, so ancestor indexes are redundant there.
+  if (sourceIndex === SearchIndex.ALL) {
+    return [sourceIndex];
+  }
+
+  return [selectedTrigger, ...containerEntities]
+    .map((type) => mapping[type])
+    .filter((index): index is SearchIndex => Boolean(index));
 };
 
 const getTableSuggestions = async (searchText: string) => {
@@ -411,7 +441,8 @@ export const getDestinationConfigField = (
                     fieldText: t('label.endpoint-url'),
                   }),
                 },
-              ]}>
+              ]}
+            >
               <Input
                 data-testid={`endpoint-input-${fieldName}`}
                 placeholder={DESTINATION_TYPE_BASED_PLACEHOLDERS[type] ?? ''}
@@ -425,7 +456,8 @@ export const getDestinationConfigField = (
             <Col span={24}>
               <Collapse
                 className="webhook-config-collapse"
-                expandIconPosition="end">
+                expandIconPosition="end"
+              >
                 <Collapse.Panel
                   header={
                     <Row align="middle" gutter={[8, 8]}>
@@ -439,7 +471,8 @@ export const getDestinationConfigField = (
                       </Col>
                     </Row>
                   }
-                  key={`advanced-configuration-${fieldName}`}>
+                  key={`advanced-configuration-${fieldName}`}
+                >
                   <Row align="middle" gutter={[8, 8]}>
                     <Col data-testid="secret-key" span={24}>
                       <Form.Item
@@ -449,7 +482,8 @@ export const getDestinationConfigField = (
                           )}:`}</Typography.Text>
                         }
                         labelCol={{ span: 24 }}
-                        name={[fieldName, 'config', 'secretKey']}>
+                        name={[fieldName, 'config', 'secretKey']}
+                      >
                         <Input.Password
                           data-testid={`secret-key-input-${fieldName}`}
                           placeholder={`${t('label.secret-key')} (${t(
@@ -464,7 +498,8 @@ export const getDestinationConfigField = (
                           <Row
                             data-testid={`webhook-${fieldName}-headers-list`}
                             gutter={[8, 8]}
-                            key="headers">
+                            key="headers"
+                          >
                             <Col span={24}>
                               <Row align="middle" justify="space-between">
                                 <Col>
@@ -503,7 +538,8 @@ export const getDestinationConfigField = (
                                                 }
                                               ),
                                             },
-                                          ]}>
+                                          ]}
+                                        >
                                           <Input
                                             data-testid={`header-key-input-${name}`}
                                             placeholder={t('label.key')}
@@ -524,7 +560,8 @@ export const getDestinationConfigField = (
                                                 }
                                               ),
                                             },
-                                          ]}>
+                                          ]}
+                                        >
                                           <Input
                                             data-testid={`header-value-input-${name}`}
                                             placeholder={t('label.value')}
@@ -555,7 +592,8 @@ export const getDestinationConfigField = (
                           <Row
                             data-testid={`webhook-${fieldName}-query-params-list`}
                             gutter={[8, 8]}
-                            key="queryParams">
+                            key="queryParams"
+                          >
                             <Col span={24}>
                               <Row align="middle" justify="space-between">
                                 <Col>
@@ -594,7 +632,8 @@ export const getDestinationConfigField = (
                                                 }
                                               ),
                                             },
-                                          ]}>
+                                          ]}
+                                        >
                                           <Input
                                             data-testid={`query-param-key-input-${name}`}
                                             placeholder={t('label.key')}
@@ -615,7 +654,8 @@ export const getDestinationConfigField = (
                                                 }
                                               ),
                                             },
-                                          ]}>
+                                          ]}
+                                        >
                                           <Input
                                             data-testid={`query-param-value-input-${name}`}
                                             placeholder={t('label.value')}
@@ -648,7 +688,8 @@ export const getDestinationConfigField = (
                           )}:`}</Typography.Text>
                         }
                         labelCol={{ span: 24 }}
-                        name={[fieldName, 'config', 'httpMethod']}>
+                        name={[fieldName, 'config', 'httpMethod']}
+                      >
                         <Radio.Group
                           data-testid={`http-method-${fieldName}`}
                           defaultValue={HTTPMethod.Post}
@@ -678,7 +719,8 @@ export const getDestinationConfigField = (
                   fieldText: t('label.email'),
                 }),
               },
-            ]}>
+            ]}
+          >
             <Select
               className="w-full"
               data-testid={`email-input-${fieldName}`}
@@ -709,7 +751,8 @@ export const getDestinationConfigField = (
                   }),
                 }),
               },
-            ]}>
+            ]}
+          >
             <TeamAndUserSelectItem
               destinationNumber={fieldName}
               entityType={
@@ -734,7 +777,8 @@ export const getDestinationConfigField = (
         <Form.Item
           hidden
           initialValue
-          name={[fieldName, 'config', getConfigFieldFromDestinationType(type)]}>
+          name={[fieldName, 'config', getConfigFieldFromDestinationType(type)]}
+        >
           <Switch />
         </Form.Item>
       );
@@ -846,19 +890,61 @@ export const getFieldByArgumentType = (
   fieldName: number,
   argument: string,
   index: number,
-  selectedTrigger: string
+  selectedTrigger: string,
+  containerEntities: string[] = []
 ) => {
   let field: JSX.Element;
 
   const getEntityByFQN = async (searchText: string) => {
-    const searchIndexMapping =
-      searchClassBase.getEntityTypeSearchIndexMapping();
-
     return searchEntity({
       searchText,
-      searchIndex: searchIndexMapping[selectedTrigger],
+      searchIndex: getFqnSearchIndexes(selectedTrigger, containerEntities),
       showDisplayNameAsLabel: false,
+      wildcardEntityTypes: containerEntities,
     });
+  };
+
+  const getEntityByIdSuggestions = async (searchText?: string) => {
+    const searchIndexMapping =
+      searchClassBase.getEntityTypeSearchIndexMapping();
+    const trimmed = (searchText ?? '').trim();
+    const isUuidInput = UUID_REGEX.test(trimmed);
+
+    try {
+      const response = await searchQuery({
+        query: trimmed,
+        pageNumber: 1,
+        pageSize: PAGE_SIZE_LARGE,
+        queryFilter: isUuidInput ? getTermQuery({ id: trimmed }) : undefined,
+        searchIndex: searchIndexMapping[selectedTrigger],
+      });
+
+      return uniqBy(
+        response.hits.hits.map((d) => {
+          const id = d._source.id ?? '';
+          const fqn = d._source.fullyQualifiedName ?? '';
+
+          return {
+            uuid: id,
+            value: id,
+            label: (
+              <div className="entity-id-option">
+                <div>{id}</div>
+                <div className="entity-id-option-fqn">{fqn}</div>
+              </div>
+            ),
+          };
+        }),
+        'value'
+      );
+    } catch (error) {
+      showErrorToast(
+        error as AxiosError,
+        t('server.entity-fetch-error', { entity: t('label.search') })
+      );
+
+      return [];
+    }
   };
   const translatedContractStatusOptions = DATA_CONTRACT_STATUS_OPTIONS.map(
     (option) => ({
@@ -870,17 +956,17 @@ export const getFieldByArgumentType = (
   switch (argument) {
     case 'fqnList':
       field = (
-        <AsyncSelect
+        <FQNListSelect
           api={getEntityByFQN}
           className="w-full"
+          containerEntities={containerEntities}
           data-testid="fqn-list-select"
-          maxTagTextLength={45}
-          mode="tags"
+          mode="multiple"
           optionFilterProp="label"
           placeholder={t('label.search-by-type', {
             type: t('label.fqn-uppercase'),
           })}
-          showArrow={false}
+          searchIndex={getFqnSearchIndexes(selectedTrigger, containerEntities)}
         />
       );
 
@@ -908,7 +994,7 @@ export const getFieldByArgumentType = (
           className="w-full"
           data-testid="table-name-select"
           maxTagTextLength={45}
-          mode="tags"
+          mode="multiple"
           optionFilterProp="label"
           placeholder={t('label.search-by-type', {
             type: t('label.table-lowercase'),
@@ -925,7 +1011,7 @@ export const getFieldByArgumentType = (
           className="w-full"
           data-testid="entity-name-select"
           maxTagTextLength={45}
-          mode="tags"
+          mode="multiple"
           optionFilterProp="label"
           placeholder={t('label.search-by-type', {
             type: t('label.entity-lowercase'),
@@ -987,11 +1073,13 @@ export const getFieldByArgumentType = (
 
     case 'entityIdList':
       field = (
-        <Select
+        <AsyncSelect
+          api={getEntityByIdSuggestions}
           className="w-full"
           data-testid="entity-id-select"
-          mode="tags"
-          open={false}
+          maxTagTextLength={45}
+          mode="multiple"
+          optionLabelProp="uuid"
           placeholder={t('label.search-by-type', {
             type: t('label.entity-id', {
               entity: t('label.data-asset'),
@@ -1105,7 +1193,8 @@ export const getFieldByArgumentType = (
               required: true,
               message: getMessageFromArgumentName(argument),
             },
-          ]}>
+          ]}
+        >
           {field}
         </Form.Item>
       </Col>
@@ -1124,7 +1213,8 @@ export const getConditionalField = (
   condition: string,
   name: number,
   selectedTrigger: string,
-  supportedActions?: EventFilterRule[]
+  supportedActions?: EventFilterRule[],
+  containerEntities?: string[]
 ) => {
   const selectedAction = supportedActions?.find(
     (action) => action.name === condition
@@ -1139,7 +1229,13 @@ export const getConditionalField = (
   return (
     <>
       {requiredArguments?.map((argument, index) => {
-        return getFieldByArgumentType(name, argument, index, selectedTrigger);
+        return getFieldByArgumentType(
+          name,
+          argument,
+          index,
+          selectedTrigger,
+          containerEntities
+        );
       })}
     </>
   );
@@ -1315,7 +1411,8 @@ export const getSourceOptionsFromResourceList = (
       label: (
         <div
           className="d-flex items-center gap-2"
-          data-testid={`${resource}-option`}>
+          data-testid={`${resource}-option`}
+        >
           {showCheckbox && (
             <Checkbox checked={selectedResource?.includes(resource)} />
           )}

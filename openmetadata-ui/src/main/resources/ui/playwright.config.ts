@@ -25,6 +25,13 @@ dotenv.config();
 export default defineConfig({
   testDir: './playwright/e2e',
   outputDir: './playwright/output/test-results',
+  // Omit {projectName} and {platform} from snapshot filenames so a single
+  // reference image works on both macOS dev machines and Linux CI runners.
+  // Edge lines in the lineage PNG are pure bezier geometry (no text/fonts)
+  // and render identically across platforms; the threshold in toMatchSnapshot
+  // absorbs any minor anti-aliasing differences in the node-card text areas.
+  snapshotPathTemplate:
+    '{testDir}/{testFileDir}/__snapshots__/{testFileName}-snapshots/{arg}{ext}',
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -46,6 +53,7 @@ export default defineConfig({
       },
     ],
     ['blob'],
+    ['json', { outputFile: './playwright/output/results.json' }],
   ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
@@ -88,7 +96,15 @@ export default defineConfig({
         '**/DataAssetRulesEnabled.spec.ts',
         '**/DataAssetRulesDisabled.spec.ts',
         '**/SystemCertificationTags.spec.ts',
+        '**/SSOLogin.spec.ts',
       ],
+    },
+    {
+      name: 'sso-auth',
+      testMatch: ['**/SSOLogin.spec.ts', '**/SSORenewal.spec.ts'],
+      use: { ...devices['Desktop Chrome'] },
+      fullyParallel: false,
+      workers: 1,
     },
     {
       name: 'entity-data-teardown',

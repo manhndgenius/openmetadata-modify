@@ -293,19 +293,35 @@ export const verifyEntitiesAreSorted = async (page: Page) => {
   expect(entityNames).toEqual(sortedEntityNames);
 };
 
-export const navigateToExploreAndSelectEntity = async (
-  page: Page,
-  entityName: string,
-  endpoint?: string,
-  fullyQualifiedName?: string
-) => {
+export const navigateToExploreAndSelectEntity = async ({
+  page,
+  entityName,
+  endpoint,
+  fullyQualifiedName,
+  exploreTab,
+  dataAssetTypeLeftPanelTestId,
+}: {
+  page: Page;
+  entityName: string;
+  endpoint?: string;
+  fullyQualifiedName?: string;
+  exploreTab?: string;
+  dataAssetTypeLeftPanelTestId?: string;
+}) => {
   await redirectToExplorePage(page);
 
   await expect(page.locator('[data-testid="loader"]')).toHaveCount(0, {
     timeout: 30000,
   });
 
-  await openEntitySummaryPanel(page, entityName, endpoint, fullyQualifiedName);
+  await openEntitySummaryPanel({
+    page,
+    entityName,
+    endpoint,
+    fullyQualifiedName,
+    exploreTab,
+    dataAssetTypeLeftPanelTestId,
+  });
 };
 
 export const getExportModalContent = (page: Page) =>

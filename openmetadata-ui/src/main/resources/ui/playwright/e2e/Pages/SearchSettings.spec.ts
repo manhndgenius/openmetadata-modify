@@ -10,222 +10,401 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-import { expect, test } from '@playwright/test';
+import { expect, Page, test as base } from '@playwright/test';
+import { PLAYWRIGHT_BASIC_TEST_TAG_OBJ } from '../../constant/config';
 import { GlobalSettingOptions } from '../../constant/settings';
 import { TableClass } from '../../support/entity/TableClass';
+import { AdminClass } from '../../support/user/AdminClass';
+import { performAdminLogin } from '../../utils/admin';
 import {
-  createNewPage,
+  getApiContext,
   redirectToHomePage,
   toastNotification,
 } from '../../utils/common';
+import { waitForAllLoadersToDisappear } from '../../utils/entity';
 import {
   mockEntitySearchSettings,
   restoreDefaultSearchSettings,
   setSliderValue,
 } from '../../utils/searchSettingUtils';
 import { settingClick } from '../../utils/sidebar';
-import { PLAYWRIGHT_BASIC_TEST_TAG_OBJ } from '../../constant/config';
 
-test.use({ storageState: 'playwright/.auth/admin.json' });
+let adminUser: AdminClass;
 
-test.describe('Search Settings Tests', PLAYWRIGHT_BASIC_TEST_TAG_OBJ, () => {
-  test.beforeEach(async ({ page }) => {
-    await redirectToHomePage(page);
-  });
-
-  test('Update global search settings', async ({ page }) => {
-    test.slow(true);
-
-    await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
-
-    const enableRolesPolicesInSearchSwitch = page.getByTestId(
-      'enable-roles-polices-in-search-switch'
-    );
-
-    await enableRolesPolicesInSearchSwitch.click();
-    await toastNotification(page, /Search Settings updated successfully/);
-
-    const globalSettingEditIcon = page.getByTestId(
-      'global-setting-edit-icon-Max Aggregate Size'
-    );
-    await globalSettingEditIcon.click();
-
-    await page.getByTestId('value-input').fill('2000');
-
-    await page.getByTestId('inline-save-btn').click();
-    await toastNotification(page, /Search Settings updated successfully/);
-
-    await expect(
-      page.getByTestId(`global-setting-value-Max Aggregate Size`)
-    ).toHaveText('2000');
-  });
-
-  test('Update entity search settings', async ({ page }) => {
-    await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
-
-    const tableCard = page.getByTestId(mockEntitySearchSettings.key);
-
-    await tableCard.click();
-
-    await expect(page).toHaveURL(
-      new RegExp(mockEntitySearchSettings.url + '$')
-    );
-
-    await expect(
-      page.getByTestId('entity-search-settings-header')
-    ).toBeVisible();
-
-    const fieldContainers = page.getByTestId('field-container-header');
-    const firstFieldContainer = fieldContainers.first();
-    await firstFieldContainer.click();
-
-    // Highlight Field
-    const highlightFieldToggle = page.getByTestId('highlight-field-switch');
-    await highlightFieldToggle.click();
-
-    // Field Weight
-    await setSliderValue(page, 'field-weight-slider', 8);
-
-    // Match Type
-    const matchTypeSelect = page.getByTestId('match-type-select');
-    await matchTypeSelect.click();
-    await page.getByTitle('Fuzzy Match').click();
-
-    // Score Mode
-    const scoreModeSelect = page.getByTestId('score-mode-select');
-    await scoreModeSelect.click();
-    await page.getByTitle('Max').click();
-
-    // Boost Mode
-    const boostModeSelect = page.getByTestId('boost-mode-select');
-    await boostModeSelect.click();
-    await page.getByTitle('Replace').click();
-
-    // Save
-    await page.getByTestId('save-btn').click();
-
-    await toastNotification(page, /Search Settings updated successfully/);
-
-    await expect(scoreModeSelect).toHaveText('Max');
-    await expect(boostModeSelect).toHaveText('Replace');
-  });
-
-  test('Restore default search settings', async ({ page }) => {
-    await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
-
-    const tableCard = page.getByTestId(mockEntitySearchSettings.key);
-
-    await tableCard.click();
-
-    await expect(page).toHaveURL(
-      new RegExp(mockEntitySearchSettings.url + '$')
-    );
-
-    const restoreDefaultsBtn = page.getByTestId('restore-defaults-btn');
-    await restoreDefaultsBtn.click();
-
-    await restoreDefaultSearchSettings(page);
-
-    await toastNotification(page, /Search Settings restored successfully/);
-  });
+// Using separate admin use fixture to avoid conflicts while asserting
+// toast notifications for search settings update in tests.
+const test = base.extend<{ page: Page }>({
+  page: async ({ browser }, use) => {
+    const adminPage = await browser.newPage();
+    await adminUser.login(adminPage);
+    await use(adminPage);
+    await adminPage.close();
+  },
 });
 
-test.describe('Search Preview test', () => {
-  const table1 = new TableClass();
-  const table2 = new TableClass();
-  // Override properties to include "ranking" keyword
-  table1.entity.name = `${table1.entity.name}-ranking`;
-  table1.entity.displayName = `${table1.entity.name}`;
-  table2.entity.description = `This is a ${table1.entity.name} test table for search settings verification`;
+test.describe('Search Settings', () => {
+  test.beforeAll(async ({ browser }) => {
+    adminUser = new AdminClass();
 
-  test.beforeAll('Setup pre-requests', async ({ browser }) => {
-    const { apiContext, afterAction } = await createNewPage(browser);
-    // Create tables with the customized properties
-    await table1.create(apiContext);
-    await table2.create(apiContext);
+    const { apiContext, afterAction } = await performAdminLogin(browser);
+    await adminUser.create(apiContext);
     await afterAction();
   });
 
-  test.afterAll('Cleanup', async ({ browser }) => {
-    const { apiContext, afterAction } = await createNewPage(browser);
-    await table1.delete(apiContext);
-    await table2.delete(apiContext);
+  test.afterAll(async ({ browser }) => {
+    const { apiContext, afterAction } = await performAdminLogin(browser);
+    await adminUser.delete(apiContext);
     await afterAction();
   });
 
-  test('Search preview for searchable table', async ({ page }) => {
-    await redirectToHomePage(page);
-    await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
-
-    const tableCard = page.getByTestId(mockEntitySearchSettings.key);
-    await tableCard.click();
-
-    await expect(page).toHaveURL(
-      new RegExp(mockEntitySearchSettings.url + '$')
-    );
-
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
+  test.describe('Search Settings Tests', PLAYWRIGHT_BASIC_TEST_TAG_OBJ, () => {
+    test.beforeEach(async ({ page }) => {
+      await redirectToHomePage(page);
     });
 
-    const descriptionField = page.getByTestId(
-      `field-configuration-panel-description`
-    );
-    await descriptionField.click();
-    await setSliderValue(page, 'field-weight-slider', 68);
+    test('Update global search settings', async ({ page }) => {
+      await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
 
-    const previewResponse = page.waitForResponse('/api/v1/search/preview');
-    await page.getByTestId('highlight-field-switch').click();
-    await previewResponse;
+      const enableRolesPolicesInSearchSwitch = page.getByTestId(
+        'enable-roles-polices-in-search-switch'
+      );
 
-    await expect(page.getByTestId('highlight-field-switch')).toHaveAttribute(
-      'aria-checked',
-      'false'
-    );
+      await enableRolesPolicesInSearchSwitch.click();
+      await toastNotification(page, /Search Settings updated successfully/);
 
-    const searchInput = page.getByTestId('searchbar');
-    await searchInput.fill(table1.entity.name);
-    await previewResponse;
+      // Add and remove field value boost
+      await page.getByTestId('add-field-value-boost-btn').click();
 
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('[data-testid="loader"]', {
-      state: 'detached',
+      await page
+        .locator('.field-value-boost-modal:visible')
+        .waitFor({ state: 'visible' });
+
+      const modal = page.locator('.field-value-boost-modal:visible');
+
+      await modal.locator('#field').click();
+
+      await page
+        .locator('.ant-select-dropdown:visible')
+        .getByTitle('totalVotes')
+        .click();
+
+      await page
+        .locator('.ant-select-dropdown:visible')
+        .waitFor({ state: 'hidden' });
+
+      await setSliderValue(page, 'field-boost-slider', 25.6);
+
+      await modal.locator('button').filter({ hasText: 'Save' }).click();
+
+      await toastNotification(page, /Search Settings updated successfully/);
+
+      await page
+        .locator('.field-value-boost-panel')
+        .filter({ hasText: 'Field Value Boost' })
+        .click();
+
+      await page
+        .locator('[data-row-key="totalVotes"]')
+        .getByTestId('delete-field-value-boost-btn')
+        .click();
+
+      await toastNotification(page, /Search Settings updated successfully/);
+
+      const globalSettingEditIcon = page.getByTestId(
+        'global-setting-edit-icon-Max Aggregate Size'
+      );
+      await globalSettingEditIcon.click();
+
+      await page.getByTestId('value-input').fill('2000');
+
+      await page.getByTestId('inline-save-btn').click();
+      await toastNotification(page, /Search Settings updated successfully/);
+
+      await expect(
+        page.getByTestId(`global-setting-value-Max Aggregate Size`)
+      ).toHaveText('2000');
     });
 
-    const searchResultsContainer = page.locator('.search-results-container');
+    test('Update entity search settings', async ({ page }) => {
+      await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
 
-    // Get the search result cards
-    const searchCards = searchResultsContainer.locator('.search-card');
+      const tableCard = page.getByTestId(mockEntitySearchSettings.key);
 
-    // Find the card where the title exactly matches the entity name
-    const matchedCard = searchCards.filter({
-      has: page.getByTestId('entity-header-display-name').filter({
-        hasText: table1.entity.name,
-      }),
+      await tableCard.click();
+
+      await expect(page).toHaveURL(
+        new RegExp(mockEntitySearchSettings.url + '$')
+      );
+
+      await expect(
+        page.getByTestId('entity-search-settings-header')
+      ).toBeVisible();
+
+      const fieldContainers = page.getByTestId('field-container-header');
+      const firstFieldContainer = fieldContainers.first();
+      await firstFieldContainer.click();
+
+      // Highlight Field
+      const highlightFieldToggle = page.getByTestId('highlight-field-switch');
+      await highlightFieldToggle.click();
+
+      // Field Weight
+      await setSliderValue(page, 'field-weight-slider', 8);
+
+      // Match Type
+      const matchTypeSelect = page.getByTestId('match-type-select');
+      await matchTypeSelect.click();
+      await page
+        .locator('.ant-select-dropdown:visible')
+        .getByTitle('Fuzzy Match')
+        .click();
+
+      // Score Mode
+      const scoreModeSelect = page.getByTestId('score-mode-select');
+      await scoreModeSelect.click();
+      await page
+        .locator('.ant-select-dropdown:visible')
+        .getByTitle('Max')
+        .click();
+
+      // Boost Mode
+      const boostModeSelect = page.getByTestId('boost-mode-select');
+      await boostModeSelect.click();
+      await page
+        .locator('.ant-select-dropdown:visible')
+        .getByTitle('Replace')
+        .click();
+
+      // Save
+      await page.getByTestId('save-btn').click();
+
+      await toastNotification(page, /Search Settings updated successfully/);
+
+      await expect(scoreModeSelect).toHaveText('Max');
+      await expect(boostModeSelect).toHaveText('Replace');
     });
 
-    // Assert that it exists
-    await expect(matchedCard).toHaveCount(1);
+    test('Restore default search settings', async ({ page }) => {
+      await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
 
-    // Optionally, check the description inside that card
-    await expect(
-      matchedCard.getByTestId('entity-header-display-name')
-    ).toHaveText(table1.entity.name);
+      const tableCard = page.getByTestId(mockEntitySearchSettings.key);
 
-    // Find the card where the description matches table2's entity description
-    const cardWithDescription = searchCards.filter({
-      has: page.getByTestId('description-text').filter({
-        hasText: table2.entity.description,
-      }),
+      await tableCard.click();
+
+      await expect(page).toHaveURL(
+        new RegExp(mockEntitySearchSettings.url + '$')
+      );
+
+      const restoreDefaultsBtn = page.getByTestId('restore-defaults-btn');
+      await restoreDefaultsBtn.click();
+
+      await restoreDefaultSearchSettings(page);
+
+      await toastNotification(page, /Search Settings restored successfully/);
     });
-
-    // Assert that such a card exists
-    await expect(cardWithDescription).toHaveCount(1);
-
-    // Optionally, verify the description text
-    await expect(
-      cardWithDescription.getByTestId('description-text')
-    ).toHaveText(table2.entity.description);
   });
+
+  test.describe('Search Preview test', () => {
+    const table1 = new TableClass();
+    const table2 = new TableClass();
+    // Override properties to include "ranking" keyword
+    table1.entity.name = `${table1.entity.name}-ranking`;
+    table1.entity.displayName = `${table1.entity.name}`;
+    table2.entity.description = `This is a ${table1.entity.name} test table for search settings verification`;
+
+    test.beforeAll('Setup pre-requests', async ({ browser }) => {
+      const { apiContext, afterAction } = await performAdminLogin(browser);
+      // Create tables with the customized properties
+      await table1.create(apiContext);
+      await table2.create(apiContext);
+      await afterAction();
+    });
+
+    test.afterAll('Cleanup', async ({ browser }) => {
+      const { apiContext, afterAction } = await performAdminLogin(browser);
+      await table1.delete(apiContext);
+      await table2.delete(apiContext);
+      await afterAction();
+    });
+
+    test('Search preview for searchable table', async ({ page }) => {
+      await redirectToHomePage(page);
+      await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
+
+      const tableCard = page.getByTestId(mockEntitySearchSettings.key);
+      await tableCard.click();
+
+      await expect(page).toHaveURL(
+        new RegExp(mockEntitySearchSettings.url + '$')
+      );
+
+      await waitForAllLoadersToDisappear(page);
+
+      const descriptionField = page.getByTestId(
+        `field-configuration-panel-description`
+      );
+      await descriptionField.click();
+      await setSliderValue(page, 'field-weight-slider', 68);
+
+      const previewResponse = page.waitForResponse('/api/v1/search/preview');
+      await page.getByTestId('highlight-field-switch').click();
+      await previewResponse;
+
+      await expect(page.getByTestId('highlight-field-switch')).toHaveAttribute(
+        'aria-checked',
+        'false'
+      );
+
+      const searchInput = page.getByTestId('searchbar');
+      await searchInput.fill(table1.entity.name);
+      await previewResponse;
+
+      await waitForAllLoadersToDisappear(page);
+
+      const searchResultsContainer = page.locator('.search-results-container');
+
+      // Get the search result cards
+      const searchCards = searchResultsContainer.locator('.search-card');
+
+      // Find the card where the title exactly matches the entity name
+      const matchedCard = searchCards.filter({
+        has: page.getByTestId('entity-header-display-name').filter({
+          hasText: table1.entity.name,
+        }),
+      });
+
+      // Assert that it exists
+      await expect(matchedCard).toHaveCount(1);
+
+      // Optionally, check the description inside that card
+      await expect(
+        matchedCard.getByTestId('entity-header-display-name')
+      ).toHaveText(table1.entity.name);
+
+      // Find the card where the description matches table2's entity description
+      const cardWithDescription = searchCards.filter({
+        has: page.getByTestId('description-text').filter({
+          hasText: table2.entity.description,
+        }),
+      });
+
+      // Assert that such a card exists
+      await expect(cardWithDescription).toHaveCount(1);
+
+      // Optionally, verify the description text
+      await expect(
+        cardWithDescription.getByTestId('description-text')
+      ).toHaveText(table2.entity.description);
+    });
+  });
+
+  test.describe(
+    'Search Preview Consistency Tests',
+    PLAYWRIGHT_BASIC_TEST_TAG_OBJ,
+    () => {
+      test.beforeEach(async ({ page }) => {
+        // Reset settings via API before each test to avoid parallel-test bleed.
+        // Call the API directly (without asserting on the response body) so that
+        // a schema mismatch in restoreDefaultSearchSettings never kills setUp.
+        const { apiContext } = await getApiContext(page);
+        await apiContext.put('/api/v1/system/settings/reset/searchSettings');
+        await redirectToHomePage(page);
+      });
+
+      test.afterEach(async ({ page }) => {
+        await restoreDefaultSearchSettings(page);
+      });
+
+      test('Preview config reflects reverted n-gram weight after save', async ({
+        page,
+      }) => {
+        await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
+        const tableCard = page.getByTestId(mockEntitySearchSettings.key);
+        await tableCard.click();
+
+        await expect(page).toHaveURL(
+          new RegExp(mockEntitySearchSettings.url + '$')
+        );
+        await waitForAllLoadersToDisappear(page);
+
+        // Expand the name.ngram field configuration panel.
+        const ngramPanel = page.getByTestId(
+          'field-configuration-panel-name.ngram'
+        );
+        await ngramPanel.click();
+
+        // Use large, precisely-settable values so slider imprecision cannot
+        // cause the predicate to miss. 50 is the "saved" value; 20 is the
+        // "reverted" value — both are far from the 0-end of the range.
+        await setSliderValue(page, 'field-weight-slider', 50);
+
+        // Wait for React to propagate the slider change — the Save button
+        // becomes enabled only after searchSettings.isUpdated turns true.
+        // Without this guard, clicking Save while it is still disabled fires
+        // no API request and leaves saveResponse pending until timeout.
+        await expect(page.getByTestId('save-btn')).toBeEnabled();
+
+        const saveResponse = page.waitForResponse(
+          (r) =>
+            r.url().includes('/api/v1/system/settings') &&
+            r.request().method() === 'PUT'
+        );
+        await page.getByTestId('save-btn').click();
+        await saveResponse;
+        await toastNotification(page, /Search Settings updated successfully/);
+
+        // Scope the predicate to boost=20 so a stale post-save preview
+        // response (boost=50) can never satisfy the promise.
+        const revertedPreviewPromise = page.waitForResponse((r) => {
+          if (!r.url().includes('/api/v1/search/preview')) {
+            return false;
+          }
+          const boost = r
+            .request()
+            .postDataJSON()
+            ?.searchSettings?.assetTypeConfigurations?.find(
+              (c: { assetType: string }) => c.assetType === 'table'
+            )
+            ?.searchFields?.find(
+              (f: { field: string }) => f.field === 'name.ngram'
+            )?.boost;
+
+          return boost === 20;
+        });
+
+        await setSliderValue(page, 'field-weight-slider', 20);
+
+        const revertedPreviewResponse = await revertedPreviewPromise;
+        expect(revertedPreviewResponse.status()).toBe(200);
+      });
+
+      test('Preview config updates when restore defaults returns empty search fields', async ({
+        page,
+      }) => {
+        await settingClick(page, GlobalSettingOptions.SEARCH_SETTINGS);
+        const tableCard = page.getByTestId(mockEntitySearchSettings.key);
+        await tableCard.click();
+
+        await expect(page).toHaveURL(
+          new RegExp(mockEntitySearchSettings.url + '$')
+        );
+        await waitForAllLoadersToDisappear(page);
+
+        await page.getByTestId('restore-defaults-btn').click();
+        await toastNotification(page, /Search Settings restored successfully/);
+
+        // Reload so the page re-fetches the restored config and triggers preview.
+        const previewPromise = page.waitForResponse('/api/v1/search/preview');
+        await page.reload();
+        const previewResponse = await previewPromise;
+        await waitForAllLoadersToDisappear(page);
+
+        const body = previewResponse.request().postDataJSON();
+
+        // After restore the preview API must be called — body must be present.
+        expect(body).not.toBeNull();
+        expect(body?.searchSettings?.assetTypeConfigurations).toBeDefined();
+      });
+    }
+  );
 });

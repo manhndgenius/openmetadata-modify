@@ -48,11 +48,9 @@ And is defined as:
 ```
 
 
-{% note %}
-
+$$note
 If you have external services other than glue and facing permission issues, add the permissions to the list above.
-
-{% /note %}
+$$
 
 
 You can find further information on the Athena connector in the <a href="https://docs.open-metadata.org/connectors/database/athena" target="_blank">docs</a>.
@@ -171,6 +169,18 @@ Workgroups are used to separate users, teams, applications or workloads.
 Select here the workgroup that the ingestion workflow should use.
 
 You can find more information about <a href="https://docs.aws.amazon.com/athena/latest/ug/user-created-workgroups.html" target="_blank">How workgroups work</a>.
+$$
+
+$$section
+### Catalog ID $(id="catalogId")
+
+The catalog ID for Athena. This is required when ingesting metadata from:
+- **S3 Tables**: Use the format `s3tablescatalog/<bucket-name>` (e.g., `s3tablescatalog/my-table-bucket`)
+- **Cross-account catalogs**: Use the AWS account ID of the account that owns the Glue Data Catalog
+
+If not provided, defaults to the caller's AWS account.
+
+Find more information about <a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables.html" target="_blank">S3 Tables</a> and <a href="https://docs.aws.amazon.com/glue/latest/dg/cross-account-access.html" target="_blank">Cross-account access in AWS Glue</a>.
 $$
 
 $$section

@@ -56,6 +56,23 @@ public interface SearchIndex {
           "connection",
           "changeSummary");
 
+  /**
+   * Relationship/enrichment fields fetched by {@code EntityRepository.setFields} that every search
+   * document populates. Stored-JSON fields (name, displayName, description, service, entity-native
+   * counts) are NOT in this set — they live on the entity row and need no extra fetch.
+   */
+  Set<String> COMMON_REINDEX_FIELDS =
+      Set.of(
+          "owners",
+          "domains",
+          "reviewers",
+          "followers",
+          "votes",
+          "extension",
+          "tags",
+          "certification",
+          "dataProducts");
+
   public static final SearchClient searchClient = Entity.getSearchRepository().getSearchClient();
   static final Logger LOG = LoggerFactory.getLogger(SearchIndex.class);
 
@@ -91,6 +108,28 @@ public interface SearchIndex {
   }
 
   Map<String, Object> buildSearchIndexDocInternal(Map<String, Object> esDoc);
+
+  /**
+   * Returns the set of fields the {@code SearchIndexApp} reindex path must ask
+   * {@code EntityRepository.setFields} to populate for this index to build a correct document.
+   *
+   * <p>The default returns the wildcard {@code "*"} so reindex pulls every supported field for
+   * the entity — the same hydration shape that existed before PR&nbsp;#27723. Selective probes on
+   * 1.12.8 caused multiple silent-drop regressions (e.g. testCaseResult /
+   * testCaseResultSummary going missing after a recreate=true reindex), and the cost of a few
+   * extra fields per row is much smaller than the cost of chasing each Index for the right
+   * declaration.
+   *
+   * <p>Override this only when an entity has a fan-out relationship that would blow up the heap
+   * if loaded eagerly. {@link DatabaseSchemaIndex} is the canonical case — its {@code tables}
+   * relationship can include thousands of rows, so it returns a curated set that excludes it.
+   *
+   * <p>Keep overrides side-effect-free and safe to call on a probe instance whose entity is
+   * {@code null} — the factory invokes them without an entity to discover fields statically.
+   */
+  default Set<String> getRequiredReindexFields() {
+    return Set.of("*");
+  }
 
   default Map<String, Object> getCommonAttributesMap(EntityInterface entity, String entityType) {
     Map<String, Object> map = new HashMap<>();

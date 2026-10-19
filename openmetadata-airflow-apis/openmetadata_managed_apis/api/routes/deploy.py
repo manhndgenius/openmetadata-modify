@@ -11,10 +11,14 @@
 """
 Deploy the DAG and scan it with the scheduler
 """
+
 import traceback
 from typing import Callable
 
-from flask import Blueprint, Response, request
+from flask import Blueprint, Response, jsonify, make_response, request
+from pydantic import ValidationError
+
+from metadata.ingestion.api.parser import parse_ingestion_pipeline_config_gracefully
 from openmetadata_managed_apis.api.response import ApiResponse
 from openmetadata_managed_apis.operations.deploy import DagDeployer
 from openmetadata_managed_apis.utils.logger import routes_logger
@@ -44,11 +48,7 @@ def get_fn(blueprint: Blueprint) -> Callable:
     if not is_airflow_3_or_higher():
         from airflow.www.app import csrf
     else:
-        # Airflow 3.x doesn't have csrf in the same location, use a no-op
-        class csrf:
-            @staticmethod
-            def exempt(f):
-                return f
+        from airflow.providers.fab.www.app import csrf
 
     @blueprint.route("/deploy", methods=["POST"])
     @csrf.exempt
@@ -76,9 +76,9 @@ def get_fn(blueprint: Blueprint) -> Callable:
             )
 
             deployer = DagDeployer(ingestion_pipeline)
-            response = deployer.deploy()
+            result = deployer.deploy()
 
-            return response
+            return make_response(jsonify(result.get_json()), result.status_code)
 
         except ValidationError as err:
             logger.debug(traceback.format_exc())

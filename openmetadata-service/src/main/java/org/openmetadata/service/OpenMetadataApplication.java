@@ -184,7 +184,7 @@ import org.quartz.SchedulerException;
     info =
         @Info(
             title = "OpenMetadata APIs",
-            version = "1.12.6",
+            version = "1.12.13",
             description = "Common types and API definition for OpenMetadata",
             contact =
                 @Contact(
@@ -613,6 +613,8 @@ public class OpenMetadataApplication extends Application<OpenMetadataApplication
   }
 
   private void registerHealthCheck(Environment environment) {
+    // Liveness probe target — pure process-aliveness, intentionally NOT coupled to
+    // any downstream system. See OpenMetadataServerHealthCheck for the design rationale.
     environment
         .healthChecks()
         .register("OpenMetadataServerHealthCheck", new OpenMetadataServerHealthCheck());

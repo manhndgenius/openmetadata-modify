@@ -125,6 +125,7 @@ import org.openmetadata.service.util.EntityUtil;
 import org.openmetadata.service.util.EntityUtil.Fields;
 import org.openmetadata.service.util.EntityUtil.RelationIncludes;
 import org.openmetadata.service.util.FullyQualifiedName;
+import org.openmetadata.service.util.LikeEscape;
 import org.openmetadata.service.util.RestUtil;
 import org.openmetadata.service.util.ValidatorUtil;
 
@@ -149,6 +150,7 @@ public class TableRepository extends EntityRepository<Table> {
   public static final String TABLE_COLUMN_EXTENSION = "table.column";
   public static final String TABLE_EXTENSION = "table.table";
   public static final String CUSTOM_METRICS_EXTENSION = "customMetrics.";
+  public static final String COLUMN_EXTENSION_JSON_SCHEMA = "columnExtension";
   public static final String TABLE_PROFILER_CONFIG = "tableProfilerConfig";
 
   public static final String COLUMN_FIELD = "columns";
@@ -1257,6 +1259,11 @@ public class TableRepository extends EntityRepository<Table> {
   }
 
   @Override
+  protected List<Column> getColumnsForExtensionPersistence(Table entity) {
+    return entity.getColumns();
+  }
+
+  @Override
   protected void clearEntitySpecificRelationshipsForMany(List<Table> entities) {
     if (entities.isEmpty()) return;
     List<UUID> ids = entities.stream().map(Table::getId).toList();
@@ -1326,6 +1333,44 @@ public class TableRepository extends EntityRepository<Table> {
       collectColumnTags(table.getColumns(), columnTagsByTarget);
     }
     applyTagsBatchWithRdf(columnTagsByTarget);
+  }
+
+  /**
+   * Safety net for the table hard-delete cascade. The normal flow goes
+   * {@code table -> executable test suite -> test cases} via CONTAINS relationships, but if that
+   * chain is broken (legacy data, an earlier partial-failure cascade, or a test case linked only
+   * to a logical suite) test cases keep pointing at the deleted table through {@code entityLink}.
+   * Those orphans then break listing and search indexing. Here we explicitly delete any test case
+   * whose {@code entityFQN} resolves under the table being deleted, going through the standard
+   * delete path so test case results, resolution status, and search docs are also cleaned up.
+   */
+  @Override
+  protected void entitySpecificCleanup(String deletedBy, Table table) {
+    deleteResidualTestCases(table, deletedBy);
+    deleteResidualExecutableTestSuite(table, deletedBy);
+  }
+
+  private void deleteResidualTestCases(Table table, String deletedBy) {
+    String tableFqn = table.getFullyQualifiedName();
+    String likePrefix = LikeEscape.escape(tableFqn) + Entity.SEPARATOR + "%";
+    List<String> testCaseIds = daoCollection.testCaseDAO().findIdsByEntityFQN(tableFqn, likePrefix);
+    if (testCaseIds.isEmpty()) {
+      return;
+    }
+    LOG.info("Deleting {} residual test case(s) linked to table {}", testCaseIds.size(), tableFqn);
+    for (String testCaseId : testCaseIds) {
+      Entity.deleteEntity(deletedBy, Entity.TEST_CASE, UUID.fromString(testCaseId), true, true);
+    }
+  }
+
+  private void deleteResidualExecutableTestSuite(Table table, String deletedBy) {
+    List<CollectionDAO.EntityRelationshipRecord> records =
+        daoCollection
+            .relationshipDAO()
+            .findTo(table.getId(), TABLE, Relationship.CONTAINS.ordinal(), TEST_SUITE);
+    for (CollectionDAO.EntityRelationshipRecord record : records) {
+      Entity.deleteEntity(deletedBy, TEST_SUITE, record.getId(), true, true);
+    }
   }
 
   @Override
@@ -1825,6 +1870,21 @@ public class TableRepository extends EntityRepository<Table> {
       LOG.warn("Failed to get extension for column {}: {}", columnFQN, e.getMessage());
     }
     return null;
+  }
+
+  private Map<String, List<CustomMetric>> batchFetchCustomMetricsByColumn(UUID tableId) {
+    List<ExtensionRecord> records =
+        daoCollection
+            .entityExtensionDAO()
+            .getExtensions(tableId, CUSTOM_METRICS_EXTENSION + TABLE_COLUMN_EXTENSION);
+    Map<String, List<CustomMetric>> metricsByColumn = new HashMap<>();
+    for (ExtensionRecord record : records) {
+      CustomMetric metric = JsonUtils.readValue(record.extensionJson(), CustomMetric.class);
+      if (metric != null && metric.getColumnName() != null) {
+        metricsByColumn.computeIfAbsent(metric.getColumnName(), k -> new ArrayList<>()).add(metric);
+      }
+    }
+    return metricsByColumn;
   }
 
   private List<CustomMetric> getCustomMetrics(Table table, String columnName) {
@@ -2395,20 +2455,43 @@ public class TableRepository extends EntityRepository<Table> {
     }
 
     if (fieldsParam != null && fieldsParam.contains("customMetrics")) {
+      Map<String, List<CustomMetric>> metricsByColumn =
+          batchFetchCustomMetricsByColumn(table.getId());
       for (Column column : paginatedColumns) {
-        column.setCustomMetrics(getCustomMetrics(table, column.getName()));
+        column.setCustomMetrics(metricsByColumn.getOrDefault(column.getName(), List.of()));
       }
     }
 
     if (fieldsParam != null && fieldsParam.contains("extension")) {
+      List<ExtensionRecord> allColumnExtensions =
+          daoCollection
+              .entityExtensionDAO()
+              .getExtensionsByJsonSchema(table.getId(), COLUMN_EXTENSION_JSON_SCHEMA);
+      Map<String, Object> extensionByColumnHash = new HashMap<>();
+      for (ExtensionRecord record : allColumnExtensions) {
+        try {
+          extensionByColumnHash.put(
+              record.extensionName(), JsonUtils.readValue(record.extensionJson(), Object.class));
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to deserialize column extension for table {} extensionKey {}: {}",
+              table.getId(),
+              record.extensionName(),
+              e.getMessage());
+        }
+      }
       for (Column column : paginatedColumns) {
-        column.setExtension(getColumnExtension(table.getId(), column.getFullyQualifiedName()));
+        column.setExtension(
+            extensionByColumnHash.get(
+                FullyQualifiedName.buildHash(column.getFullyQualifiedName())));
       }
     }
 
     if (fieldsParam != null && fieldsParam.contains("profile")) {
       setColumnProfile(paginatedColumns);
-      populateEntityFieldTags(entityType, paginatedColumns, table.getFullyQualifiedName(), true);
+      if (!fieldsParam.contains("tags")) {
+        populateEntityFieldTags(entityType, paginatedColumns, table.getFullyQualifiedName(), true);
+      }
       paginatedColumns =
           PIIMasker.getTableProfile(
               table.getFullyQualifiedName(), paginatedColumns, authorizer, securityContext);
@@ -2729,8 +2812,10 @@ public class TableRepository extends EntityRepository<Table> {
 
     Fields fields = getFields(fieldsParam);
     if (fields.contains("customMetrics") || fields.contains("*")) {
+      Map<String, List<CustomMetric>> metricsByColumn =
+          batchFetchCustomMetricsByColumn(table.getId());
       for (Column column : paginatedResults) {
-        column.setCustomMetrics(getCustomMetrics(table, column.getName()));
+        column.setCustomMetrics(metricsByColumn.getOrDefault(column.getName(), List.of()));
       }
     }
 

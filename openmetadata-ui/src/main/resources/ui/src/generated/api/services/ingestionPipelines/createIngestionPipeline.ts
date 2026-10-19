@@ -284,6 +284,12 @@ export interface Pipeline {
      */
     extractJsonSchema?: boolean;
     /**
+     * Optional configuration to toggle the ingestion of source-specific custom properties (e.g.
+     * Iceberg table properties) onto the entity extension. When disabled, no custom property
+     * definitions are registered and no extension values are set.
+     */
+    includeCustomProperties?: boolean;
+    /**
      * Optional configuration to toggle the DDL Statements ingestion.
      */
     includeDDL?: boolean;
@@ -3804,6 +3810,12 @@ export interface ConfigObject {
      */
     usageLocation?: string;
     /**
+     * Catalog ID for Athena. For S3 Tables, use the format 's3tablescatalog/<bucket-name>'. For
+     * cross-account Glue catalogs, use the AWS account ID. If not provided, defaults to the
+     * caller's AWS account.
+     */
+    catalogId?: string;
+    /**
      * Optional name to give to the database in OpenMetadata. If left blank, we will use default
      * as the database name.
      *
@@ -3943,6 +3955,10 @@ export interface ConfigObject {
     httpPath?: string;
     /**
      * Table name to fetch the query history.
+     *
+     * Table name to fetch the query history. When set, this overrides the default
+     * 'mysql.general_log' (or 'mysql.slow_log' when 'useSlowLogs' is enabled). The custom table
+     * must expose columns compatible with the selected log path.
      */
     queryHistoryTable?: string;
     /**
@@ -4549,6 +4565,9 @@ export interface ConfigObject {
     pipelineFilterPattern?: FilterPattern;
     /**
      * Underlying database connection
+     *
+     * Optional. Underlying SSISDB connection. When omitted, the connector runs in file-only
+     * mode and run history is not extracted.
      */
     databaseConnection?: DatabaseConnectionClass;
     /**
@@ -4598,6 +4617,12 @@ export interface ConfigObject {
      * Event broker configuration. Choose between Kafka and Kinesis.
      */
     brokerConfig?: BrokerConfiguration;
+    /**
+     * Map OpenLineage dataset namespaces (or prefixes) to OpenMetadata database service names.
+     * Used when multiple services of the same type exist. Example: 'mysql://cluster-a:3306' ->
+     * 'mysql-cluster-a'.
+     */
+    namespaceToServiceMapping?: { [key: string]: string };
     /**
      * We support username/password or No Authentication
      */
@@ -5986,6 +6011,12 @@ export interface ConfigConnection {
      */
     databaseSchema?: string;
     /**
+     * Table name to fetch the query history. When set, this overrides the default
+     * 'mysql.general_log' (or 'mysql.slow_log' when 'useSlowLogs' is enabled). The custom table
+     * must expose columns compatible with the selected log path.
+     */
+    queryHistoryTable?: string;
+    /**
      * Use slow logs to extract lineage.
      */
     useSlowLogs?: boolean;
@@ -6338,6 +6369,7 @@ export enum ConnectionType {
     Mysql = "Mysql",
     Postgres = "Postgres",
     RESTAPI = "RestAPI",
+    S3 = "S3",
     SQLite = "SQLite",
 }
 
@@ -6409,6 +6441,9 @@ export interface ConfigCredentials {
  * Underlying database connection
  *
  * Mssql Database Connection Config
+ *
+ * Optional. Underlying SSISDB connection. When omitted, the connector runs in file-only
+ * mode and run history is not extracted.
  */
 export interface DatabaseConnectionClass {
     connectionArguments?: { [key: string]: any };
@@ -6706,6 +6741,12 @@ export interface HiveMetastoreConnectionDetails {
      * attempts to scan all the schemas.
      */
     databaseSchema?: string;
+    /**
+     * Table name to fetch the query history. When set, this overrides the default
+     * 'mysql.general_log' (or 'mysql.slow_log' when 'useSlowLogs' is enabled). The custom table
+     * must expose columns compatible with the selected log path.
+     */
+    queryHistoryTable?: string;
     /**
      * Use slow logs to extract lineage.
      */

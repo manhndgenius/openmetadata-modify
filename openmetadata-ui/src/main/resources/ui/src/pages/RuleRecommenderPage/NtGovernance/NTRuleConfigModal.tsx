@@ -25,6 +25,7 @@ import {
   Typography,
 } from 'antd';
 import { useEffect } from 'react';
+import { DataType } from '../../../generated/entity/data/table';
 import {
   NtRuleConfig,
   NtRuleConfigField,
@@ -119,7 +120,19 @@ const NTRuleConfigModal = ({
                     ]}
                     style={{ marginBottom: 8 }}
                   >
-                    {column.control === 'TAG_LIST' ? (
+                    {column.control === 'DATA_TYPE_MULTI_SELECT' ? (
+                      <Select
+                        showSearch
+                        data-testid={`${field.name}-${column.name}-${row.name}`}
+                        mode="multiple"
+                        options={Object.values(DataType).map((dataType) => ({
+                          label: dataType,
+                          value: dataType,
+                        }))}
+                        placeholder="Select OpenMetadata data types"
+                        style={{ minWidth: 260 }}
+                      />
+                    ) : column.control === 'TAG_LIST' ? (
                       <Select
                         mode="tags"
                         placeholder={column.name}

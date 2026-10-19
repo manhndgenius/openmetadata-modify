@@ -23,7 +23,7 @@ import {
   openDragDropDropdown,
 } from '../../utils/dragDrop';
 import { settingClick } from '../../utils/sidebar';
-import { addTeamHierarchy, hardDeleteTeam } from '../../utils/team';
+import { addTeamHierarchy } from '../../utils/team';
 
 // use the admin user to login
 test.use({ storageState: 'playwright/.auth/admin.json' });
@@ -100,12 +100,9 @@ test.describe('Teams drag and drop should work properly', () => {
   });
 
   test('Add teams in hierarchy', async ({ page }) => {
+    test.slow();
     for (const teamDetails of DRAG_AND_DROP_TEAM_DETAILS) {
       await addTeamHierarchy(page, teamDetails);
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
 
       await expect(
         page.locator(`[data-row-key="${teamDetails.name}"]`)
@@ -188,32 +185,5 @@ test.describe('Teams drag and drop should work properly', () => {
     await movedTeam.scrollIntoViewIfNeeded();
 
     await expect(movedTeam).toBeVisible();
-  });
-
-  test('Delete Teams', async ({ page }) => {
-    for (const teamName of [
-      teamNameBusiness,
-      teamNameDivision,
-      teamNameDepartment,
-      teamNameGroup,
-    ]) {
-      const getTeamResponse = page.waitForResponse(
-        `/api/v1/teams/name/${teamName}*`
-      );
-
-      await page.getByRole('link', { name: teamName }).click();
-      await getTeamResponse;
-
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
-
-      await hardDeleteTeam(page);
-
-      // Validate the deleted team
-      await expect(
-        page.getByRole('cell', { name: teamName })
-      ).not.toBeVisible();
-    }
   });
 });

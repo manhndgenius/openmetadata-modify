@@ -159,7 +159,7 @@ ingestion/.nox/
 _bmad/
 
 # Claude Flow generated files
-.claude/settings.local.json
+.claude/*
 .mcp.json
 claude-flow.config.json
 .swarm/
@@ -206,4 +206,6 @@ docs/BAO_CAO_CHI_TIET_TEST_CHUC_NANG.md
 docs/TEST_CASES_SPECIFICATION.md
 openmetadata-ui/src/main/resources/ui/src/services/metricEvaluation.test.ts
 run_benchmark.py
-tests/
+/tests/
+openmetadata-ui/src/main/resources/ui/debug.json
+openmetadata-ui/src/main/resources/ui/pnpm-lock.yaml

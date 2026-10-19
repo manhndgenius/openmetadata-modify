@@ -15,7 +15,7 @@ import org.openmetadata.service.search.ParseTags;
 import org.openmetadata.service.search.SearchIndexUtils;
 import org.openmetadata.service.search.models.FlattenColumn;
 
-public record TableIndex(Table table) implements ColumnIndex, SearchIndex {
+public record TableIndex(Table table) implements ColumnIndex {
   private static final Set<String> excludeFields =
       Set.of(
           "sampleData",
@@ -98,7 +98,7 @@ public record TableIndex(Table table) implements ColumnIndex, SearchIndex {
     fields.put("columns.name", 5.0f);
     fields.put("columns.displayName", 5.0f);
     fields.put("columns.description", 2.0f);
-    fields.put("columns.children.name", 3.0f);
+    fields.put("columnNamesFuzzy", 3.0f);
     return fields;
   }
 }
