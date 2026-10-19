@@ -84,4 +84,45 @@ describe('NTRuleConfigModal', () => {
 
     expect(onReset).toHaveBeenCalledTimes(1);
   });
+
+  it('renders allowedTypes as an OpenMetadata data type selector', () => {
+    const mappingRule = {
+      configurable: true,
+      defaults: {
+        suffixTypeMappings: [
+          { allowedTypes: ['TIMESTAMPZ'], suffix: '_at' },
+        ],
+      },
+      display_name: 'Date Time Columns',
+      fields: [
+        {
+          columns: [
+            { control: 'TEXT' as const, name: 'suffix' },
+            {
+              control: 'DATA_TYPE_MULTI_SELECT' as const,
+              name: 'allowedTypes',
+            },
+          ],
+          control: 'EDITABLE_MAPPING' as const,
+          label: 'Suffix and allowed type mappings',
+          name: 'suffixTypeMappings',
+        },
+      ],
+      name: 'NT5_DateTimeColumns',
+    };
+
+    render(
+      <NTRuleConfigModal
+        initialConfig={mappingRule.defaults}
+        rule={mappingRule}
+        onCancel={jest.fn()}
+        onSave={jest.fn()}
+      />
+    );
+
+    expect(
+      screen.getByTestId('suffixTypeMappings-allowedTypes-0')
+    ).toBeInTheDocument();
+    expect(screen.getByText('TIMESTAMPZ')).toBeInTheDocument();
+  });
 });

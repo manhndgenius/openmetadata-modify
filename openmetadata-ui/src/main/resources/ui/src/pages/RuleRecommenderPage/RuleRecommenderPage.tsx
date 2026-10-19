@@ -42,7 +42,6 @@ import {
   Select,
   Space,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -443,6 +442,11 @@ export const RuleRecommenderPage = () => {
 
   // NT Rule Config Modal
   const ntRuleConfigModal = useNtRuleConfigModal();
+
+  // Top-level tabs: 'rules' vs 'nt-governance'
+  const [activeTab, setActiveTab] = useState<'rules' | 'nt-governance'>(
+    'rules'
+  );
 
   // Filter states
   const [statusFilter, setStatusFilter] = useState<
@@ -1176,13 +1180,16 @@ export const RuleRecommenderPage = () => {
                 onClick={() => handleReviewRule(record.id, 'REJECT')}
               />
             </Tooltip>
-            <Tooltip title="Edit parameters">
-              <Button
-                icon={<EditOutlined />}
-                size="small"
-                onClick={() => openEditRuleModal(record)}
-              />
-            </Tooltip>
+            {record.rule_type !== 'columnValuesToBeNotNull' &&
+              record.rule_type !== 'columnValuesToBeUnique' && (
+                <Tooltip title="Edit parameters">
+                  <Button
+                    icon={<EditOutlined />}
+                    size="small"
+                    onClick={() => openEditRuleModal(record)}
+                  />
+                </Tooltip>
+              )}
           </Space>
         ),
     },
@@ -1227,442 +1234,444 @@ export const RuleRecommenderPage = () => {
                 onClick={() => setIsConfigModalOpen(true)}
               />
             </Tooltip>
-            <Button
-              disabled={stats.accepted === 0}
-              loading={publishing}
-              type="primary"
-              onClick={handlePublish}
-            >
-              Publish ({stats.accepted})
-            </Button>
+            {activeTab === 'rules' && (
+              <Button
+                disabled={stats.accepted === 0}
+                loading={publishing}
+                type="primary"
+                onClick={handlePublish}
+              >
+                Publish ({stats.accepted})
+              </Button>
+            )}
           </div>
         </div>
 
-        <BatchOperationsPanel
-          onCandidateComplete={async (tableFqns) => {
-            const uniqueFqns = Array.from(new Set(tableFqns));
-            if (uniqueFqns.length === 0) {
-              return;
-            }
-            setSelectedTableFqn(uniqueFqns[0]);
-            const generatedRules = await Promise.all(
-              uniqueFqns.map((fqn) => ruleRecommenderAPI.getRules(fqn))
-            );
-            setRules(generatedRules.flat().filter(isRuleVisible));
-          }}
-          onNtComplete={async (tableFqns) => {
-            if (tableFqns.includes(selectedTableFqn)) {
-              await loadNtGovernanceStatus();
-            }
-          }}
-          onOpenTable={async (tableFqn) => {
-            setSelectedTableFqn(tableFqn);
-            setLoading(true);
-            try {
-              setRules(
-                (await ruleRecommenderAPI.getRules(tableFqn)).filter(
-                  isRuleVisible
-                )
-              );
-            } finally {
-              setLoading(false);
-            }
-          }}
-        />
-
-
-        {/* Metric KPI cards */}
-        <Row gutter={[16, 16]}>
-          <Col lg={4} sm={8} xs={12}>
-            <div className="stat-card">
-              <span className="stat-label">Total Rules</span>
-              <span className="stat-value primary">{stats.total}</span>
-            </div>
-          </Col>
-          <Col lg={4} sm={8} xs={12}>
-            <div className="stat-card">
-              <span className="stat-label">Pending Review</span>
-              <span className="stat-value warning">{stats.pending}</span>
-            </div>
-          </Col>
-          <Col lg={4} sm={8} xs={12}>
-            <div className="stat-card">
-              <span className="stat-label">Already Applied</span>
-              <span className="stat-value success">{stats.applied}</span>
-            </div>
-          </Col>
-          <Col lg={4} sm={8} xs={12}>
-            <div className="stat-card">
-              <span className="stat-label">Accepted</span>
-              <span className="stat-value success">{stats.accepted}</span>
-            </div>
-          </Col>
-          <Col lg={4} sm={8} xs={12}>
-            <div className="stat-card">
-              <span className="stat-label">Rejected</span>
-              <span className="stat-value danger">{stats.rejected}</span>
-            </div>
-          </Col>
-        </Row>
-
-        {/* Tabs Container */}
-        <div className="main-content-card">
-          <Tabs
-            defaultActiveKey="recommendations"
-            items={[
-              {
-                key: 'recommendations',
-                label: (
-                  <span>
-                    <ExperimentOutlined />
-                    Candidate Rules ({filteredRules.length})
-                  </span>
-                ),
-                children: (
-                  <>
-                    {/* Toolbar */}
-                    <div className="toolbar-row">
-                      <Space wrap size={12}>
-                        <Input.Search
-                          allowClear
-                          placeholder="Search rule or column..."
-                          style={{ width: 260 }}
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                        />
-                        <Radio.Group
-                          buttonStyle="solid"
-                          value={statusFilter}
-                          onChange={(e) => setStatusFilter(e.target.value)}
-                        >
-                          <Radio.Button value="ALL">
-                            All ({stats.total})
-                          </Radio.Button>
-                          <Radio.Button value="PENDING">
-                            Pending ({stats.pending})
-                          </Radio.Button>
-                          <Radio.Button value="ACCEPTED">
-                            Accepted ({stats.accepted})
-                          </Radio.Button>
-                          <Radio.Button value="APPLIED">
-                            Applied ({stats.applied})
-                          </Radio.Button>
-                          <Radio.Button value="REJECTED">
-                            Rejected ({stats.rejected})
-                          </Radio.Button>
-                        </Radio.Group>
-                        <Select
-                          getPopupContainer={(triggerNode) =>
-                            triggerNode.parentElement || document.body
-                          }
-                          options={[
-                            { value: 'ALL', label: 'All Scopes' },
-                            { value: 'column', label: 'Column Rules' },
-                            { value: 'table', label: 'Table Rules' },
-                          ]}
-                          style={{ width: 140 }}
-                          value={scopeFilter}
-                          onChange={setScopeFilter}
-                        />
-                        {ruleTables.length > 1 && (
-                          <Select
-                            getPopupContainer={(triggerNode) =>
-                              triggerNode.parentElement || document.body
-                            }
-                            options={[
-                              { value: 'ALL', label: 'Tất cả các bảng' },
-                              ...ruleTables.map((t) => ({
-                                value: t,
-                                label: `Bảng: ${t}`,
-                              })),
-                            ]}
-                            style={{ minWidth: 160 }}
-                            value={ruleTableFilter}
-                            onChange={setRuleTableFilter}
-                          />
-                        )}
-                      </Space>
-
-                      <Space>
-                        <Button
-                          disabled={stats.pending === 0}
-                          icon={<CheckOutlined />}
-                          onClick={handleAcceptAll}
-                        >
-                          Accept All Pending
-                        </Button>
-                        <Button
-                          icon={<ReloadOutlined />}
-                          onClick={async () => {
-                            const targets = selectedTableFqn
-                              ? [selectedTableFqn]
-                              : [];
-                            if (targets.length === 0) {
-                              return;
-                            }
-                            setLoading(true);
-                            try {
-                              const results = await Promise.all(
-                                targets.map((fqn) =>
-                                  ruleRecommenderAPI.getRules(fqn)
-                                )
-                              );
-                              const flattened = results
-                                .flat()
-                                .filter(isRuleVisible);
-                              setRules(flattened);
-                            } finally {
-                              setLoading(false);
-                            }
-                          }}
-                        >
-                          Refresh
-                        </Button>
-                      </Space>
-                    </div>
-
-                    {/* Table View */}
-                    <Table
-                        columns={columns}
-                        dataSource={filteredRules}
-                        loading={loading}
-                        locale={{
-                          emptyText: (
-                            <Empty
-                              description={
-                                <span>
-                                  No candidate rules found. Click{' '}
-                                  <b>Run AI Recommendation</b> to generate.
-                                </span>
-                              }
-                            />
-                          ),
-                        }}
-                        pagination={{
-                          current: rulesCurrentPage,
-                          pageSize: rulesPageSize,
-                          total: filteredRules.length,
-                          showSizeChanger: true,
-                          pageSizeOptions: ['10', '20', '50'],
-                          showTotal: (total, range) =>
-                            `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc`,
-                          showQuickJumper: true,
-                          onChange: (page, pageSize) => {
-                            setRulesCurrentPage(page);
-                            setRulesPageSize(pageSize);
-                          },
-                        }}
-                        rowKey="id"
-                        scroll={{ x: 'max-content' }}
-                    />
-                  </>
-                ),
-              },
-              {
-                key: 'nt-governance',
-                label: (
-                  <span>
-                    <SafetyCertificateOutlined />
-                    {t('label.nt-governance')}
-                  </span>
-                ),
-                children: (
-                  <div style={{ padding: '16px 0' }}>
-                    <Alert
-                      showIcon
-                      description={t('label.nt-governance-description')}
-                      message={t('label.nt-governance-title')}
-                      style={{ marginBottom: 16, borderRadius: 8 }}
-                      type="info"
-                    />
-                    <Alert
-                      showIcon
-                      action={
-                        <Button
-                          icon={<DatabaseOutlined />}
-                          loading={loadingTestCases}
-                          size="small"
-                          onClick={handleViewExistingTestCases}
-                        >
-                          {t('label.view-existing-test-cases')}
-                        </Button>
-                      }
-                      description="Use the Target Scope Builder above to preview and apply NT Governance to tables, schemas, or a database."
-                      message="NT application is managed by server-side jobs"
-                      style={{ marginBottom: 16 }}
-                      type="success"
-                    />
-
-                    {ntStatusError && (
-                      <Alert
-                        showIcon
-                        description={ntStatusError}
-                        message="Unable to load NT rule status"
-                        style={{ marginBottom: 16 }}
-                        type="error"
-                      />
-                    )}
-
-                    <Card
-                      className="nt-governance-card"
-                      extra={
-                        ntStatus && (
-                          <Space size={6}>
-                            <Tag color="success">
-                              {ntStatus.applied_count} APPLIED
-                            </Tag>
-                            <Tag>{ntStatus.not_applied_count} NOT APPLIED</Tag>
-                          </Space>
-                        )
-                      }
-                      size="small"
-                      title={t('label.available-nt-definitions')}
-                    >
-                      <Table
-                        columns={[
-                          {
-                            title: t('label.name'),
-                            dataIndex: 'displayName',
-                            key: 'displayName',
-                            width: 200,
-                            render: (value, record) => (
-                              <div>
-                                <Text strong>{value || record.name}</Text>
-                                {value && value !== record.name && (
-                                  <div>
-                                    <Text code type="secondary">
-                                      {record.name}
-                                    </Text>
-                                  </div>
-                                )}
-                              </div>
-                            ),
-                          },
-                          {
-                            title: t('label.description'),
-                            dataIndex: 'description',
-                            key: 'description',
-                            ellipsis: true,
-                            width: 300,
-                          },
-                          {
-                            title: t('label.status'),
-                            dataIndex: 'status',
-                            key: 'status',
-                            width: 130,
-                            render: (status) =>
-                              status === 'APPLIED' ? (
-                                <Tag
-                                  color="success"
-                                  icon={<CheckCircleOutlined />}
-                                >
-                                  APPLIED
-                                </Tag>
-                              ) : (
-                                <Tag>NOT APPLIED</Tag>
-                              ),
-                          },
-                          {
-                            title: t('label.action-plural'),
-                            key: 'actions',
-                            width: 80,
-                            render: (_, record) => (
-                              <Tooltip title="Configure NT rule">
-                                <Button
-                                  aria-label={`Configure ${record.name}`}
-                                  data-testid={`configure-nt-rule-${record.name}`}
-                                  icon={<SettingOutlined />}
-                                  loading={
-                                    ntRuleConfigModal.loadingRuleName ===
-                                    record.name
-                                  }
-                                  type="text"
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    void ntRuleConfigModal.open(record.name);
-                                  }}
-                                />
-                              </Tooltip>
-                            ),
-                          },
-                        ]}
-                        dataSource={ntDefinitions}
-                        loading={ntStatusLoading}
-                        locale={{
-                          emptyText: ntStatusError
-                            ? 'Status unavailable'
-                            : 'No NT definitions found',
-                        }}
-                        pagination={{
-                          current: ntCurrentPage,
-                          pageSize: ntPageSize,
-                          showSizeChanger: true,
-                          pageSizeOptions: ['10', '20', '50'],
-                          showTotal: (total, range) =>
-                            `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc NT`,
-                          onChange: (page, pageSize) => {
-                            setNtCurrentPage(page);
-                            setNtPageSize(pageSize);
-                          },
-                        }}
-                        rowKey="name"
-                        scroll={{ x: 'max-content' }}
-                        size="small"
-                      />
-                    </Card>
-
-                    {existingTestCases.length > 0 && (
-                      <Card
-                        className="nt-governance-card"
-                        size="small"
-                        style={{ marginTop: 16 }}
-                        title={t('label.existing-test-cases')}
-                      >
-                        <Table
-                          columns={[
-                            {
-                              title: t('label.name'),
-                              dataIndex: 'name',
-                              key: 'name',
-                            },
-                            {
-                              title: t('label.test-definition'),
-                              dataIndex: 'testDefinition',
-                              key: 'testDefinition',
-                              render: (v) => <Tag color="geekblue">{v}</Tag>,
-                            },
-                            {
-                              title: t('label.description'),
-                              dataIndex: 'description',
-                              key: 'description',
-                            },
-                          ]}
-                          dataSource={existingTestCases.map((tc, idx) => {
-                            const item = tc as {
-                              name?: string;
-                              testDefinition?: string;
-                              description?: string;
-                            };
-
-                            return {
-                              key: idx,
-                              name: item.name,
-                              testDefinition: item.testDefinition,
-                              description: item.description,
-                            };
-                          })}
-                          pagination={{ pageSize: 5 }}
-                          size="small"
-                        />
-                      </Card>
-                    )}
-                  </div>
-                ),
-              },
-            ]}
-          />
+        {/* Top-level Tabs: Rules | NT Governance */}
+        <div className="top-level-tabs">
+          <div
+            className={`top-tab ${activeTab === 'rules' ? 'active' : ''}`}
+            onClick={() => setActiveTab('rules')}
+          >
+            <ExperimentOutlined />
+            <span>Rule Recommender</span>
+          </div>
+          <div
+            className={`top-tab ${
+              activeTab === 'nt-governance' ? 'active' : ''
+            }`}
+            onClick={() => setActiveTab('nt-governance')}
+          >
+            <SafetyCertificateOutlined />
+            <span>NT Governance</span>
+          </div>
         </div>
+
+        {/* ===================== TAB: RULES ===================== */}
+        {activeTab === 'rules' && (
+          <>
+            <BatchOperationsPanel
+              onCandidateComplete={async (tableFqns) => {
+                const uniqueFqns = Array.from(new Set(tableFqns));
+                if (uniqueFqns.length === 0) {
+                  return;
+                }
+                setSelectedTableFqn(uniqueFqns[0]);
+                const generatedRules = await Promise.all(
+                  uniqueFqns.map((fqn) => ruleRecommenderAPI.getRules(fqn))
+                );
+                setRules(generatedRules.flat().filter(isRuleVisible));
+              }}
+              onNtComplete={async (tableFqns) => {
+                if (tableFqns.includes(selectedTableFqn)) {
+                  await loadNtGovernanceStatus();
+                }
+              }}
+              onOpenTable={async (tableFqn) => {
+                setSelectedTableFqn(tableFqn);
+                setLoading(true);
+                try {
+                  setRules(
+                    (await ruleRecommenderAPI.getRules(tableFqn)).filter(
+                      isRuleVisible
+                    )
+                  );
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            />
+
+            {/* Metric KPI cards */}
+            <Row gutter={[16, 16]}>
+              <Col lg={4} sm={8} xs={12}>
+                <div className="stat-card">
+                  <span className="stat-label">Total Rules</span>
+                  <span className="stat-value primary">{stats.total}</span>
+                </div>
+              </Col>
+              <Col lg={4} sm={8} xs={12}>
+                <div className="stat-card">
+                  <span className="stat-label">Pending Review</span>
+                  <span className="stat-value warning">{stats.pending}</span>
+                </div>
+              </Col>
+              <Col lg={4} sm={8} xs={12}>
+                <div className="stat-card">
+                  <span className="stat-label">Already Applied</span>
+                  <span className="stat-value success">{stats.applied}</span>
+                </div>
+              </Col>
+              <Col lg={4} sm={8} xs={12}>
+                <div className="stat-card">
+                  <span className="stat-label">Accepted</span>
+                  <span className="stat-value success">{stats.accepted}</span>
+                </div>
+              </Col>
+              <Col lg={4} sm={8} xs={12}>
+                <div className="stat-card">
+                  <span className="stat-label">Rejected</span>
+                  <span className="stat-value danger">{stats.rejected}</span>
+                </div>
+              </Col>
+            </Row>
+
+            <div className="main-content-card">
+              {/* Toolbar */}
+              <div className="toolbar-row">
+                <Space wrap size={12}>
+                  <Input.Search
+                    allowClear
+                    placeholder="Search rule or column..."
+                    style={{ width: 260 }}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  <Radio.Group
+                    buttonStyle="solid"
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                  >
+                    <Radio.Button value="ALL">
+                      All ({stats.total})
+                    </Radio.Button>
+                    <Radio.Button value="PENDING">
+                      Pending ({stats.pending})
+                    </Radio.Button>
+                    <Radio.Button value="ACCEPTED">
+                      Accepted ({stats.accepted})
+                    </Radio.Button>
+                    <Radio.Button value="APPLIED">
+                      Applied ({stats.applied})
+                    </Radio.Button>
+                    <Radio.Button value="REJECTED">
+                      Rejected ({stats.rejected})
+                    </Radio.Button>
+                  </Radio.Group>
+                  <Select
+                    getPopupContainer={(triggerNode) =>
+                      triggerNode.parentElement || document.body
+                    }
+                    options={[
+                      { value: 'ALL', label: 'All Scopes' },
+                      { value: 'column', label: 'Column Rules' },
+                      { value: 'table', label: 'Table Rules' },
+                    ]}
+                    style={{ width: 140 }}
+                    value={scopeFilter}
+                    onChange={setScopeFilter}
+                  />
+                  {ruleTables.length > 1 && (
+                    <Select
+                      getPopupContainer={(triggerNode) =>
+                        triggerNode.parentElement || document.body
+                      }
+                      options={[
+                        { value: 'ALL', label: 'Tất cả các bảng' },
+                        ...ruleTables.map((t) => ({
+                          value: t,
+                          label: `Bảng: ${t}`,
+                        })),
+                      ]}
+                      style={{ minWidth: 160 }}
+                      value={ruleTableFilter}
+                      onChange={setRuleTableFilter}
+                    />
+                  )}
+                </Space>
+
+                <Space>
+                  <Button
+                    disabled={stats.pending === 0}
+                    icon={<CheckOutlined />}
+                    onClick={handleAcceptAll}
+                  >
+                    Accept All Pending
+                  </Button>
+                  <Button
+                    icon={<ReloadOutlined />}
+                    onClick={async () => {
+                      const targets = selectedTableFqn
+                        ? [selectedTableFqn]
+                        : [];
+                      if (targets.length === 0) {
+                        return;
+                      }
+                      setLoading(true);
+                      try {
+                        const results = await Promise.all(
+                          targets.map((fqn) =>
+                            ruleRecommenderAPI.getRules(fqn)
+                          )
+                        );
+                        const flattened = results
+                          .flat()
+                          .filter(isRuleVisible);
+                        setRules(flattened);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                  >
+                    Refresh
+                  </Button>
+                </Space>
+              </div>
+
+              {/* Table View */}
+              <Table
+                columns={columns}
+                dataSource={filteredRules}
+                loading={loading}
+                locale={{
+                  emptyText: (
+                    <Empty
+                      description={
+                        <span>
+                          No candidate rules found. Click{' '}
+                          <b>Run AI Recommendation</b> to generate.
+                        </span>
+                      }
+                    />
+                  ),
+                }}
+                pagination={{
+                  current: rulesCurrentPage,
+                  pageSize: rulesPageSize,
+                  total: filteredRules.length,
+                  showSizeChanger: true,
+                  pageSizeOptions: ['10', '20', '50'],
+                  showTotal: (total, range) =>
+                    `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc`,
+                  showQuickJumper: true,
+                  onChange: (page, pageSize) => {
+                    setRulesCurrentPage(page);
+                    setRulesPageSize(pageSize);
+                  },
+                }}
+                rowKey="id"
+                scroll={{ x: 'max-content' }}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ===================== TAB: NT GOVERNANCE ===================== */}
+        {activeTab === 'nt-governance' && (
+          <div className="main-content-card">
+            <div style={{ padding: '16px 0' }}>
+              <Alert
+                showIcon
+                description={t('label.nt-governance-description')}
+                message={t('label.nt-governance-title')}
+                style={{ marginBottom: 16, borderRadius: 8 }}
+                type="info"
+              />
+              <Alert
+                showIcon
+                action={
+                  <Button
+                    icon={<DatabaseOutlined />}
+                    loading={loadingTestCases}
+                    size="small"
+                    onClick={handleViewExistingTestCases}
+                  >
+                    {t('label.view-existing-test-cases')}
+                  </Button>
+                }
+                description="Use the Target Scope Builder above to preview and apply NT Governance to tables, schemas, or a database."
+                message="NT application is managed by server-side jobs"
+                style={{ marginBottom: 16 }}
+                type="success"
+              />
+
+              {ntStatusError && (
+                <Alert
+                  showIcon
+                  description={ntStatusError}
+                  message="Unable to load NT rule status"
+                  style={{ marginBottom: 16 }}
+                  type="error"
+                />
+              )}
+
+              <Card
+                className="nt-governance-card"
+                extra={
+                  ntStatus && (
+                    <Space size={6}>
+                      <Tag color="success">
+                        {ntStatus.applied_count} APPLIED
+                      </Tag>
+                      <Tag>{ntStatus.not_applied_count} NOT APPLIED</Tag>
+                    </Space>
+                  )
+                }
+                size="small"
+                title={t('label.available-nt-definitions')}
+              >
+                <Table
+                  columns={[
+                    {
+                      title: t('label.name'),
+                      dataIndex: 'displayName',
+                      key: 'displayName',
+                      width: 200,
+                      render: (value, record) => (
+                        <div>
+                          <Text strong>{value || record.name}</Text>
+                          {value && value !== record.name && (
+                            <div>
+                              <Text code type="secondary">
+                                {record.name}
+                              </Text>
+                            </div>
+                          )}
+                        </div>
+                      ),
+                    },
+                    {
+                      title: t('label.description'),
+                      dataIndex: 'description',
+                      key: 'description',
+                      ellipsis: true,
+                      width: 300,
+                    },
+                    {
+                      title: t('label.status'),
+                      dataIndex: 'status',
+                      key: 'status',
+                      width: 130,
+                      render: (status) =>
+                        status === 'APPLIED' ? (
+                          <Tag
+                            color="success"
+                            icon={<CheckCircleOutlined />}
+                          >
+                            APPLIED
+                          </Tag>
+                        ) : (
+                          <Tag>NOT APPLIED</Tag>
+                        ),
+                    },
+                    {
+                      title: t('label.action-plural'),
+                      key: 'actions',
+                      width: 80,
+                      render: (_, record) => (
+                        <Tooltip title="Configure NT rule">
+                          <Button
+                            aria-label={`Configure ${record.name}`}
+                            data-testid={`configure-nt-rule-${record.name}`}
+                            icon={<SettingOutlined />}
+                            loading={
+                              ntRuleConfigModal.loadingRuleName ===
+                              record.name
+                            }
+                            type="text"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void ntRuleConfigModal.open(record.name);
+                            }}
+                          />
+                        </Tooltip>
+                      ),
+                    },
+                  ]}
+                  dataSource={ntDefinitions}
+                  loading={ntStatusLoading}
+                  locale={{
+                    emptyText: ntStatusError
+                      ? 'Status unavailable'
+                      : 'No NT definitions found',
+                  }}
+                  pagination={{
+                    current: ntCurrentPage,
+                    pageSize: ntPageSize,
+                    showSizeChanger: true,
+                    pageSizeOptions: ['10', '20', '50'],
+                    showTotal: (total, range) =>
+                      `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc NT`,
+                    onChange: (page, pageSize) => {
+                      setNtCurrentPage(page);
+                      setNtPageSize(pageSize);
+                    },
+                  }}
+                  rowKey="name"
+                  scroll={{ x: 'max-content' }}
+                  size="small"
+                />
+              </Card>
+
+              {existingTestCases.length > 0 && (
+                <Card
+                  className="nt-governance-card"
+                  size="small"
+                  style={{ marginTop: 16 }}
+                  title={t('label.existing-test-cases')}
+                >
+                  <Table
+                    columns={[
+                      {
+                        title: t('label.name'),
+                        dataIndex: 'name',
+                        key: 'name',
+                      },
+                      {
+                        title: t('label.test-definition'),
+                        dataIndex: 'testDefinition',
+                        key: 'testDefinition',
+                        render: (v) => <Tag color="geekblue">{v}</Tag>,
+                      },
+                      {
+                        title: t('label.description'),
+                        dataIndex: 'description',
+                        key: 'description',
+                      },
+                    ]}
+                    dataSource={existingTestCases.map((tc, idx) => {
+                      const item = tc as {
+                        name?: string;
+                        testDefinition?: string;
+                        description?: string;
+                      };
+
+                      return {
+                        key: idx,
+                        name: item.name,
+                        testDefinition: item.testDefinition,
+                        description: item.description,
+                      };
+                    })}
+                    pagination={{ pageSize: 5 }}
+                    size="small"
+                  />
+                </Card>
+              )}
+            </div>
+          </div>
+        )}
 
         {ntRuleConfigModal.isOpen &&
           ntRuleConfigModal.selectedRule &&

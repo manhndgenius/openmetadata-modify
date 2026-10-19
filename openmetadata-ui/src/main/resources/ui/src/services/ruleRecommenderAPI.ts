@@ -299,7 +299,7 @@ export interface NtRuleConfigField {
   integer?: boolean;
   columns?: Array<{
     name: string;
-    control: 'TEXT' | 'TAG_LIST';
+    control: 'TEXT' | 'TAG_LIST' | 'DATA_TYPE_MULTI_SELECT';
   }>;
 }
 
