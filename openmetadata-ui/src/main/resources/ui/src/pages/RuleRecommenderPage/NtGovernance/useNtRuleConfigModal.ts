@@ -46,65 +46,79 @@ export interface UseNtRuleConfigModalReturn {
   reset: () => Promise<void>;
 }
 
+interface UseNtRuleConfigOptions {
+  closeAfterSave?: boolean;
+}
+
 /**
  * Hook to manage NT Rule Configuration modal state.
  * Fetches form metadata and effective config, then persists edits in PostgreSQL.
  */
-export const useNtRuleConfigModal = (): UseNtRuleConfigModalReturn => {
+export const useNtRuleConfigModal = (
+  options: UseNtRuleConfigOptions = {}
+): UseNtRuleConfigModalReturn => {
+  const { closeAfterSave = true } = options;
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedRule, setSelectedRule] = useState<NtRuleConfigRule | undefined>();
+  const [selectedRule, setSelectedRule] = useState<
+    NtRuleConfigRule | undefined
+  >();
   const [isLoading, setIsLoading] = useState(false);
   const [loadingRuleName, setLoadingRuleName] = useState<string>();
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [schemaCache, setSchemaCache] = useState<NtRuleConfigSchema | null>(null);
+  const [schemaCache, setSchemaCache] = useState<NtRuleConfigSchema | null>(
+    null
+  );
   const [configState, setConfigState] = useState<NtRuleConfigState>();
   const openRequestId = useRef(0);
 
-  const open = useCallback(async (ruleName: string) => {
-    const requestId = ++openRequestId.current;
+  const open = useCallback(
+    async (ruleName: string) => {
+      const requestId = ++openRequestId.current;
 
-    setIsLoading(true);
-    setLoadingRuleName(ruleName);
-    setError(null);
+      setIsLoading(true);
+      setLoadingRuleName(ruleName);
+      setError(null);
 
-    try {
-      const schemaPromise = schemaCache
-        ? Promise.resolve(schemaCache)
-        : ruleRecommenderAPI.getNtRuleConfigSchema();
-      const [schema, persistedConfig] = await Promise.all([
-        schemaPromise,
-        ruleRecommenderAPI.getNtRuleConfig(ruleName),
-      ]);
-      if (requestId !== openRequestId.current) {
-        return;
-      }
-      if (!schemaCache) {
-        setSchemaCache(schema);
-      }
+      try {
+        const schemaPromise = schemaCache
+          ? Promise.resolve(schemaCache)
+          : ruleRecommenderAPI.getNtRuleConfigSchema();
+        const [schema, persistedConfig] = await Promise.all([
+          schemaPromise,
+          ruleRecommenderAPI.getNtRuleConfig(ruleName),
+        ]);
+        if (requestId !== openRequestId.current) {
+          return;
+        }
+        if (!schemaCache) {
+          setSchemaCache(schema);
+        }
 
-      const rule = schema.rules.find((item) => item.name === ruleName);
-      if (!rule) {
-        throw new Error(`NT rule configuration not found: ${ruleName}`);
-      }
+        const rule = schema.rules.find((item) => item.name === ruleName);
+        if (!rule) {
+          throw new Error(`NT rule configuration not found: ${ruleName}`);
+        }
 
-      setSelectedRule(rule);
-      setConfigState(persistedConfig);
-      setIsOpen(true);
-    } catch (err) {
-      if (requestId !== openRequestId.current) {
-        return;
+        setSelectedRule(rule);
+        setConfigState(persistedConfig);
+        setIsOpen(true);
+      } catch (err) {
+        if (requestId !== openRequestId.current) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        showErrorToast(message);
+      } finally {
+        if (requestId === openRequestId.current) {
+          setIsLoading(false);
+          setLoadingRuleName(undefined);
+        }
       }
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      showErrorToast(message);
-    } finally {
-      if (requestId === openRequestId.current) {
-        setIsLoading(false);
-        setLoadingRuleName(undefined);
-      }
-    }
-  }, [schemaCache]);
+    },
+    [schemaCache]
+  );
 
   const close = useCallback(() => {
     openRequestId.current += 1;
@@ -116,30 +130,36 @@ export const useNtRuleConfigModal = (): UseNtRuleConfigModalReturn => {
     setError(null);
   }, []);
 
-  const save = useCallback(async (config: NtRuleConfig) => {
-    if (!selectedRule || !configState) {
-      return;
-    }
+  const save = useCallback(
+    async (config: NtRuleConfig) => {
+      if (!selectedRule || !configState) {
+        return;
+      }
 
-    setIsSaving(true);
-    setError(null);
-    try {
-      await ruleRecommenderAPI.updateNtRuleConfig(
-        selectedRule.name,
-        config,
-        configState.version,
-        configState.enabled
-      );
-      showSuccessToast('NT rule configuration saved');
-      close();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      showErrorToast(message);
-    } finally {
-      setIsSaving(false);
-    }
-  }, [selectedRule, configState, close]);
+      setIsSaving(true);
+      setError(null);
+      try {
+        const saved = await ruleRecommenderAPI.updateNtRuleConfig(
+          selectedRule.name,
+          config,
+          configState.version,
+          configState.enabled
+        );
+        setConfigState(saved);
+        showSuccessToast('NT rule configuration saved');
+        if (closeAfterSave) {
+          close();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        showErrorToast(message);
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [selectedRule, configState, close, closeAfterSave]
+  );
 
   const reset = useCallback(async () => {
     if (!selectedRule || !configState) {

@@ -14,11 +14,13 @@ snowflake unit tests
 """
 # pylint: disable=line-too-long
 from unittest import TestCase
-from unittest.mock import Mock, PropertyMock, patch
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import sqlalchemy.types as sqltypes
 
-from metadata.generated.schema.entity.data.table import TableType
+from metadata.generated.schema.entity.data.database import Database
+from metadata.generated.schema.entity.data.databaseSchema import DatabaseSchema
+from metadata.generated.schema.entity.data.table import Table, TableType
 from metadata.generated.schema.entity.services.ingestionPipelines.ingestionPipeline import (
     PipelineStatus,
 )
@@ -26,14 +28,9 @@ from metadata.generated.schema.metadataIngestion.workflow import (
     OpenMetadataWorkflowConfig,
 )
 from metadata.generated.schema.type.filterPattern import FilterPattern
-from metadata.generated.schema.type.tagLabel import (
-    LabelType,
-    State,
-    TagLabel,
-    TagSource,
-)
 from metadata.ingestion.source.database.snowflake.metadata import MAP, SnowflakeSource
 from metadata.ingestion.source.database.snowflake.models import SnowflakeStoredProcedure
+from metadata.utils import fqn
 
 SNOWFLAKE_CONFIGURATION = {
     "source": {
@@ -505,16 +502,39 @@ class SnowflakeUnitTest(TestCase):
         self.assertEqual(map_type.value_type, sqltypes.VARCHAR)  # default
         self.assertFalse(map_type.not_null)  # default
 
-    @patch(
-        "metadata.ingestion.source.database.database_service.DatabaseServiceSource.get_tag_labels"
-    )
-    @patch("metadata.ingestion.source.database.snowflake.metadata.get_tag_label")
-    def test_schema_tag_inheritance(
-        self, mock_get_tag_label, mock_parent_get_tag_labels
-    ):
-        """Test schema tag inheritance"""
+    def _setup_tag_context(self, source, service_name="local_snowflake"):
+        """Populate the topology context for schema-stage tag tests and return the FQN trio."""
+        source.context.get().__dict__["database_service"] = service_name
+        source.context.get().__dict__["database"] = "TEST_DATABASE"
+        source.context.get().__dict__["database_schema"] = "TEST_SCHEMA"
+
+        database_fqn = fqn.build(
+            source.metadata,
+            entity_type=Database,
+            service_name=service_name,
+            database_name="TEST_DATABASE",
+        )
+        schema_fqn = fqn.build(
+            source.metadata,
+            entity_type=DatabaseSchema,
+            service_name=service_name,
+            database_name="TEST_DATABASE",
+            schema_name="TEST_SCHEMA",
+        )
+        table_fqn = fqn.build(
+            source.metadata,
+            entity_type=Table,
+            service_name=service_name,
+            database_name="TEST_DATABASE",
+            schema_name="TEST_SCHEMA",
+            table_name="TEST_TABLE",
+            skip_es_search=True,
+        )
+        return database_fqn, schema_fqn, table_fqn
+
+    def test_schema_tag_inheritance(self):
+        """Schema tags propagate to tables; classification dedup is preserved."""
         for source in self.sources.values():
-            # Verify tags are fetched and stored
             mock_schema_tags = [
                 Mock(
                     SCHEMA_NAME="TEST_SCHEMA", TAG_NAME="SCHEMA_TAG", TAG_VALUE="VALUE"
@@ -531,34 +551,140 @@ class SnowflakeUnitTest(TestCase):
                 {"tag_name": "SCHEMA_TAG", "tag_value": "VALUE"},
             )
 
-            # Verify schema tag labels
-            mock_get_tag_label.return_value = TagLabel(
-                tagFQN="SnowflakeTag.SCHEMA_TAG",
-                labelType=LabelType.Automated,
-                state=State.Suggested,
-                source=TagSource.Classification,
+            _, schema_fqn, table_fqn = self._setup_tag_context(source)
+
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=schema_fqn,
+                classification_name="SCHEMA_CLASSIFICATION",
+                tag_name="SCHEMA_TAG",
+                classification_description="",
+                tag_description="",
             )
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=table_fqn,
+                classification_name="TABLE_CLASSIFICATION",
+                tag_name="TABLE_TAG",
+                classification_description="",
+                tag_description="",
+            )
+            mock_parent_get_schema_tag_labels.return_value = None
 
             schema_labels = source.get_schema_tag_labels(schema_name="TEST_SCHEMA")
             self.assertIsNotNone(schema_labels)
             self.assertEqual(len(schema_labels), 1)
-
-            # Verify tag inheritance
-            source.context.get().__dict__["database_schema"] = "TEST_SCHEMA"
-            mock_parent_get_tag_labels.return_value = [
-                TagLabel(
-                    tagFQN="SnowflakeTag.TABLE_TAG",
-                    labelType=LabelType.Automated,
-                    state=State.Suggested,
-                    source=TagSource.Classification,
-                )
-            ]
+            self.assertEqual(schema_labels[0].tagFQN.root, "SCHEMA_CLASSIFICATION.SCHEMA_TAG")
 
             table_labels = source.get_tag_labels(table_name="TEST_TABLE")
             self.assertEqual(len(table_labels), 2)
             tag_fqns = [tag.tagFQN.root for tag in table_labels]
-            self.assertIn("SnowflakeTag.SCHEMA_TAG", tag_fqns)
-            self.assertIn("SnowflakeTag.TABLE_TAG", tag_fqns)
+            self.assertIn("SCHEMA_CLASSIFICATION.SCHEMA_TAG", tag_fqns)
+            self.assertIn("TABLE_CLASSIFICATION.TABLE_TAG", tag_fqns)
+
+    def test_database_tag_inheritance(self):
+        """Database tags propagate to schemas and tables when classifications don't overlap."""
+        for source in self.sources.values():
+            mock_database_tags = [
+                Mock(
+                    DATABASE_NAME="TEST_DATABASE",
+                    TAG_NAME="DATABASE_TAG",
+                    TAG_VALUE="DB_VALUE",
+                ),
+            ]
+            mock_execute = Mock()
+            mock_execute.all.return_value = mock_database_tags
+            source.engine.execute = Mock(return_value=mock_execute)
+
+            source.set_database_tags_map("TEST_DATABASE")
+            self.assertEqual(len(source.database_tags_map["TEST_DATABASE"]), 1)
+            self.assertEqual(
+                source.database_tags_map["TEST_DATABASE"][0],
+                {"tag_name": "DATABASE_TAG", "tag_value": "DB_VALUE"},
+            )
+
+            database_fqn, schema_fqn, table_fqn = self._setup_tag_context(source)
+
+            source.tags_registry.attach(
+                scope_fqn=database_fqn,
+                entity_fqn=database_fqn,
+                classification_name="DATABASE_TAG",
+                tag_name="DB_VALUE",
+                classification_description="",
+                tag_description="",
+            )
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=schema_fqn,
+                classification_name="SCHEMA_TAG",
+                tag_name="SCHEMA_VALUE",
+                classification_description="",
+                tag_description="",
+            )
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=table_fqn,
+                classification_name="TABLE_TAG",
+                tag_name="TABLE_VALUE",
+                classification_description="",
+                tag_description="",
+            )
+
+            schema_labels = source.get_schema_tag_labels(schema_name="TEST_SCHEMA")
+            self.assertIsNotNone(schema_labels)
+            self.assertEqual(len(schema_labels), 2)
+            tag_fqns = [tag.tagFQN.root for tag in schema_labels]
+            self.assertIn("SCHEMA_TAG.SCHEMA_VALUE", tag_fqns)
+            self.assertIn("DATABASE_TAG.DB_VALUE", tag_fqns)
+
+            table_labels = source.get_tag_labels(table_name="TEST_TABLE")
+            self.assertEqual(len(table_labels), 3)
+            tag_fqns = [tag.tagFQN.root for tag in table_labels]
+            self.assertIn("TABLE_TAG.TABLE_VALUE", tag_fqns)
+            self.assertIn("SCHEMA_TAG.SCHEMA_VALUE", tag_fqns)
+            self.assertIn("DATABASE_TAG.DB_VALUE", tag_fqns)
+
+    def test_tag_value_precedence(self):
+        """Lower-level tags override inherited values for the same classification.
+
+        Database: ENV=dev, Schema: ENV=staging, Table: ENV=production.
+        Schema lookup must return only ENV.staging; table lookup only ENV.production.
+        """
+        for source in self.sources.values():
+            database_fqn, schema_fqn, table_fqn = self._setup_tag_context(source)
+
+            source.tags_registry.attach(
+                scope_fqn=database_fqn,
+                entity_fqn=database_fqn,
+                classification_name="ENV",
+                tag_name="dev",
+                classification_description="",
+                tag_description="",
+            )
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=schema_fqn,
+                classification_name="ENV",
+                tag_name="staging",
+                classification_description="",
+                tag_description="",
+            )
+            source.tags_registry.attach(
+                scope_fqn=schema_fqn,
+                entity_fqn=table_fqn,
+                classification_name="ENV",
+                tag_name="production",
+                classification_description="env classification",
+                tag_description="production tag",
+            )
+
+            schema_labels = source.get_schema_tag_labels(schema_name="TEST_SCHEMA")
+            self.assertEqual(len(schema_labels), 1)
+            self.assertEqual(schema_labels[0].tagFQN.root, "ENV.staging")
+
+            table_labels = source.get_tag_labels(table_name="TEST_TABLE")
+            self.assertEqual(len(table_labels), 1)
+            self.assertEqual(table_labels[0].tagFQN.root, "ENV.production")
 
     def test_table_names_full_query_generation(self):
         """Test complete SQL query generation for full extraction with different parameters"""
@@ -709,9 +835,7 @@ class TestSnowflakeGetDatabaseNamesRawEagerFetch:
         mock_conn = MagicMock()
         mock_conn.execute.return_value = result
 
-        with patch.object(
-            SnowflakeSource, "connection", new_callable=PropertyMock
-        ) as mocked_conn_prop:
+        with patch.object(SnowflakeSource, "connection", new_callable=PropertyMock) as mocked_conn_prop:
             mocked_conn_prop.return_value = mock_conn
             list(source.get_database_names_raw())
 
@@ -724,10 +848,134 @@ class TestSnowflakeGetDatabaseNamesRawEagerFetch:
         mock_conn = MagicMock()
         mock_conn.execute.return_value = result
 
-        with patch.object(
-            SnowflakeSource, "connection", new_callable=PropertyMock
-        ) as mocked_conn_prop:
+        with patch.object(SnowflakeSource, "connection", new_callable=PropertyMock) as mocked_conn_prop:
             mocked_conn_prop.return_value = mock_conn
             names = list(source.get_database_names_raw())
 
         assert names == ["DB_A", "DB_B", "DB_C"]
+
+
+class SnowflakeBadNameIsolationTest(TestCase):
+    """
+    Regression tests for the fault-isolation paths added so that a single
+    invalid table name in a schema does not poison ingestion for unrelated
+    tables. See:
+      - snowflake/utils.py::get_schema_columns  (per-row try/except)
+      - snowflake/metadata.py::_get_table_names_and_types
+        (per-table try/except around deleted-tables FQN listcomp)
+    """
+
+    @staticmethod
+    def _column_row(table_name, column_name, ordinal):
+        """Build a row tuple in the shape _get_schema_columns iterates over."""
+        return (
+            table_name,
+            column_name,
+            "NUMBER",  # coltype
+            None,  # character_maximum_length
+            38,  # numeric_precision
+            0,  # numeric_scale
+            "YES",  # is_nullable
+            None,  # column_default
+            "NO",  # is_identity
+            None,  # comment
+            None,  # identity_start
+            None,  # identity_increment
+            ordinal,  # ordinal_position
+        )
+
+    def test_get_schema_columns_skips_invalid_table_name(self):
+        """A row in information_schema.columns whose table_name cannot be
+        FQN-quoted must be skipped, and columns for valid tables in the same
+        result must still be populated."""
+        from snowflake.sqlalchemy.snowdialect import SnowflakeDialect
+
+        from metadata.ingestion.source.database.snowflake.utils import (
+            get_schema_columns,
+        )
+
+        dialect = SnowflakeDialect()
+        # The function calls these on `self`; stub them.
+        dialect._current_database_schema = Mock(return_value=("DB", "SCHEMA"))
+        dialect._get_schema_primary_keys = Mock(return_value={})
+
+        rows = [
+            self._column_row("GOOD_TBL", "ID", 1),
+            # Unbalanced quote — quote_name raises ValueError, even with re.DOTALL.
+            self._column_row('BAD"NAME', "X", 1),
+            self._column_row("GOOD_TBL", "NAME", 2),
+        ]
+
+        mock_connection = Mock()
+        mock_connection.execute = Mock(return_value=iter(rows))
+
+        result = get_schema_columns(dialect, mock_connection, schema="SCHEMA", info_cache={})
+
+        # The good table's columns were populated even though a bad-named row
+        # appeared between them — fault isolation at the per-row level.
+        good_key = next(k for k in result if k.lower() == "good_tbl")
+        self.assertEqual(len(result[good_key]), 2)
+        self.assertEqual([c["name"].lower() for c in result[good_key]], ["id", "name"])
+        # The bad-named row was skipped, not added under any case-variant key.
+        self.assertFalse(any("bad" in k.lower() for k in result))
+
+    def test_get_table_names_skips_deleted_with_invalid_name(self):
+        """A deleted table whose name cannot be FQN-quoted must not abort the
+        listcomp that populates context.deleted_tables — valid deletions
+        before/after the bad row should still be recorded."""
+        from datetime import datetime
+
+        from metadata.ingestion.source.database.snowflake.models import (
+            SnowflakeTable,
+            SnowflakeTableList,
+        )
+
+        source = self.sources["not_incremental"] if hasattr(self, "sources") else None
+        if source is None:
+            source = next(iter(get_snowflake_sources().values()))
+
+        deleted_at = datetime(2026, 1, 1)
+        snowflake_tables = SnowflakeTableList(
+            tables=[
+                SnowflakeTable(name="GOOD_GONE", deleted=deleted_at, type_=TableType.Regular),
+                SnowflakeTable(name='BAD"GONE', deleted=deleted_at, type_=TableType.Regular),
+                SnowflakeTable(name="ALIVE_TBL", deleted=None, type_=TableType.Regular),
+            ]
+        )
+
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names = Mock(return_value=snowflake_tables)
+        source.context.get().__dict__["database_service"] = "svc"
+        source.context.get().__dict__["database"] = "db"
+        source.context.get_global().deleted_tables = []
+
+        def fake_fqn_build(*, metadata, entity_type, service_name, database_name, schema_name, table_name, **_kw):
+            from metadata.utils.fqn import quote_name
+
+            # quote_name still rejects names with embedded `"`; let that drive the failure.
+            quote_name(table_name)
+            return f"{service_name}.{database_name}.{schema_name}.{table_name}"
+
+        with (
+            patch.object(SnowflakeSource, "inspector", new_callable=PropertyMock) as p,
+            patch(
+                "metadata.ingestion.source.database.snowflake.metadata.fqn.build",
+                side_effect=fake_fqn_build,
+            ),
+        ):
+            p.return_value = mock_inspector
+            not_deleted = source._get_table_names_and_types("SCHEMA")
+
+        # Iteration completed and yielded the alive table.
+        names = [t.name for t in not_deleted]
+        self.assertEqual(names, ["ALIVE_TBL"])
+        # The good deleted FQN was recorded; the bad-named one was skipped.
+        recorded = source.context.get_global().deleted_tables
+        self.assertEqual(len(recorded), 1)
+        self.assertIn("GOOD_GONE", recorded[0])
+        self.assertNotIn("BAD", " ".join(recorded))
+
+    def setUp(self):
+        # Build a snowflake source we can mutate per-test.
+        if not hasattr(self, "sources"):
+            self.sources = get_snowflake_sources()

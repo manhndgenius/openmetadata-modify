@@ -17,6 +17,7 @@ import { SidebarItem } from '../../constant/sidebar';
 import { UserClass } from '../../support/user/UserClass';
 import { performAdminLogin } from '../../utils/admin';
 import { redirectToHomePage } from '../../utils/common';
+import { waitForAllLoadersToDisappear } from '../../utils/entity';
 import { settingClick, sidebarClick } from '../../utils/sidebar';
 import { test } from '../fixtures/pages';
 
@@ -246,6 +247,19 @@ test.describe('Online Users Feature', () => {
       await page.waitForSelector('[data-testid="loader"]', {
         state: 'detached',
       });
+
+      await expect(
+        page.getByRole('cell', { name: displayName }).first()
+      ).toBeVisible();
+
+      // Search by email should surface the same user
+      const emailSearchResponse = page.waitForResponse(
+        '/api/v1/search/query?q=*&index=user_search_index&from=0&size=*'
+      );
+      await page.getByTestId('searchbar').fill(testUser.data.email);
+      await emailSearchResponse;
+
+      await waitForAllLoadersToDisappear(page);
 
       await expect(
         page.getByRole('cell', { name: displayName }).first()

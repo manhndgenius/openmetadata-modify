@@ -10,6 +10,7 @@
 #  limitations under the License.
 """Databricks legacy source module"""
 
+import json
 import re
 import traceback
 from copy import deepcopy
@@ -18,7 +19,7 @@ from typing import Iterable, Optional, Tuple, Union
 from pydantic import EmailStr
 from pydantic_core import PydanticCustomError
 from pyhive.sqlalchemy_hive import _type_map
-from sqlalchemy import exc, types, util
+from sqlalchemy import exc, text, types, util
 from sqlalchemy.engine import reflection
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import DatabaseError
@@ -37,6 +38,7 @@ from metadata.generated.schema.entity.services.ingestionPipelines.status import 
 from metadata.generated.schema.metadataIngestion.workflow import (
     Source as WorkflowSource,
 )
+from metadata.generated.schema.type.basic import Markdown
 from metadata.generated.schema.type.entityReferenceList import EntityReferenceList
 from metadata.ingestion.api.models import Either
 from metadata.ingestion.api.steps import InvalidSourceException
@@ -47,6 +49,13 @@ from metadata.ingestion.source.database.column_type_parser import create_sqlalch
 from metadata.ingestion.source.database.common_db_source import (
     CommonDbSourceService,
     TableNameAndType,
+)
+from metadata.ingestion.source.database.databricks.models import (
+    ColumnDescriptions,
+    DescribeJsonPayload,
+    DescribeJsonType,
+    NestedDescriptions,
+    NestedFieldPath,
 )
 from metadata.ingestion.source.database.databricks.queries import (
     DATABRICKS_DDL,
@@ -81,7 +90,10 @@ logger = ingestion_logger()
 
 DATABRICKS_TAG = "DATABRICKS TAG"
 DATABRICKS_TAG_CLASSIFICATION = "DATABRICKS TAG CLASSIFICATION"
-DEFAULT_TAG_VALUE = "NONE"
+DATABRICKS_VALUELESS_CLASSIFICATION = "DATABRICKS_TAGS"
+DATABRICKS_VALUELESS_CLASSIFICATION_DESCRIPTION = (
+    "Databricks tags ingested as key-only (no associated value)."
+)
 
 
 class STRUCT(String):
@@ -117,6 +129,112 @@ _type_map.update(
         "binary": create_sqlalchemy_type("BINARY"),
     }
 )
+
+
+def _fetch_nested_descriptions_via_describe_json(
+    connection,
+    db_name: str | None,
+    schema: str | None,
+    table_name: str,
+) -> ColumnDescriptions:
+    """Run ``DESCRIBE TABLE EXTENDED <fqn> AS JSON`` and return a per-column
+    map of ``{field_path_tuple: comment}``.
+
+    ``DESCRIBE ... AS JSON`` is supported on Databricks Runtime 16.4+ and
+    returns a structured payload with ``columns[].type.fields[].comment`` on
+    nested struct fields — the only SQL path that exposes nested COMMENTs
+    (Spark's regular ``simpleString`` output strips them).
+
+    Returns an empty dict on any failure (older runtime, JSON parse error,
+    schema variation, or missing db/schema) so the caller cleanly degrades
+    to top-level-only descriptions.
+    """
+    if not db_name or not schema:
+        return {}
+    try:
+        result = connection.execute(
+            text(
+                f"DESCRIBE TABLE EXTENDED `{db_name}`.`{schema}`.`{table_name}` AS JSON"
+            )
+        ).fetchone()
+        if not result or not result[0]:
+            return {}
+        payload = json.loads(result[0])
+    except Exception as err:  # pylint: disable=broad-except
+        logger.debug(
+            f"DESCRIBE AS JSON unavailable or unparseable for {db_name}.{schema}.{table_name}: {err}"
+        )
+        return {}
+
+    return _build_column_descriptions_map(payload)
+
+
+def _build_column_descriptions_map(
+    payload: object,
+) -> ColumnDescriptions:
+    """From a DESCRIBE-AS-JSON payload, return ``{column_name: {path: comment}}``
+    for every top-level column whose type contains commented nested fields.
+
+    Accepts a raw JSON-decoded value (``object``) and validates it into a
+    ``DescribeJsonPayload``. On any validation failure (older runtime,
+    schema variation, malformed JSON) returns an empty dict so the caller
+    cleanly degrades to top-level-only descriptions."""
+    try:
+        validated = DescribeJsonPayload.model_validate(payload)
+    except Exception:  # pylint: disable=broad-except
+        return {}
+    result: ColumnDescriptions = {}
+    for col in validated.columns:
+        if not col.name:
+            continue
+        descriptions: NestedDescriptions = {}
+        _collect_nested_descriptions(col.type, [], descriptions)
+        if descriptions:
+            result[col.name] = descriptions
+    return result
+
+
+def _collect_nested_descriptions(
+    type_node: DescribeJsonType | None,
+    path: list[str],
+    descriptions: NestedDescriptions,
+) -> None:
+    """Walk a JSON ``type`` node, collecting comments from struct fields.
+
+    OM does not surface map values as named children, so map types are not
+    descended. Array wrappers do not add a path level — children of an
+    ``array<struct<...>>`` column are the struct's fields directly."""
+    if type_node is None or not type_node.name:
+        return
+    type_name = type_node.name.lower()
+    if type_name == "struct":
+        for field in type_node.fields or []:
+            if not field.name:
+                continue
+            field_path = path + [field.name]
+            if field.comment:
+                descriptions[tuple(field_path)] = field.comment
+            _collect_nested_descriptions(field.type, field_path, descriptions)
+    elif type_name == "array":
+        _collect_nested_descriptions(type_node.element_type, path, descriptions)
+
+
+def _apply_nested_descriptions(
+    column: "Column",
+    descriptions: NestedDescriptions,
+    path: NestedFieldPath,
+) -> None:
+    """Walk a parsed Column tree and assign descriptions from a path-keyed
+    map. Path matches struct-field-name nesting; arrays do not add a level
+    (children of an array column are the struct's fields)."""
+    if not column.children:
+        return
+    for child in column.children:
+        child_name = child.name.root if hasattr(child.name, "root") else str(child.name)
+        child_path = path + (child_name,)
+        if not child.description and child_path in descriptions:
+            child.description = Markdown(root=descriptions[child_path])
+        _apply_nested_descriptions(child, descriptions, child_path)
 
 
 # This method is from hive dialect originally but
@@ -181,6 +299,10 @@ def get_columns(self, connection, table_name, schema=None, **kw):
     """
 
     rows = _get_column_rows(self, connection, table_name, schema, kw.get("db_name"))
+    # Lazily populated on the first struct / array<struct> column — most tables
+    # are primitives-only and shouldn't pay the AS JSON round-trip, and map
+    # values aren't surfaced as named children so they don't need it either.
+    nested_descriptions_by_column: ColumnDescriptions | None = None
     result = []
     for col_name, col_type, _comment in rows:
         # DESCRIBE TABLE EXTENDED emits real columns first, then '#'-prefixed
@@ -189,7 +311,7 @@ def get_columns(self, connection, table_name, schema=None, **kw):
         # DescribeTableExec can emit markers not in any hardcoded whitelist, so
         # treat any '#'-prefixed row or row with empty col_type as end-of-columns.
         # ('# col_name' sub-header is filtered upstream in _get_column_rows.)
-        if col_name.startswith("#") or not col_type:
+        if not isinstance(col_name, str) or col_name.startswith("#") or not col_type:
             logger.debug(
                 f"End of columns for {schema}.{table_name}. Found end-of-columns marker: {col_name}. Stopping column extraction."
             )
@@ -201,11 +323,10 @@ def get_columns(self, connection, table_name, schema=None, **kw):
             type_match = re.search(r"^\w+", col_type)
             if type_match is None:
                 logger.warning(
-                    f"Skipping column '{col_name}' in {schema}.{table_name}: "
-                    f"unparseable col_type '{col_type}'"
+                    f"Skipping column '{col_name}' in {schema}.{table_name}: unparseable col_type '{col_type}'"
                 )
                 continue
-            col_type = type_match.group(0)
+            col_type = type_match.group(0)  # noqa: PLW2901
 
             try:
                 coltype = _type_map[col_type]
@@ -227,23 +348,47 @@ def get_columns(self, connection, table_name, schema=None, **kw):
                     sub_rows = {
                         r[0]: r[1]
                         for r in connection.execute(
-                            f"DESCRIBE TABLE `{kw.get('db_name')}`.`{schema}`"
-                            f".`{table_name}` `{col_name}`"
+                            text(
+                                f"DESCRIBE TABLE `{kw.get('db_name')}`.`{schema}`.`{table_name}` `{col_name}`"
+                            )
                         ).fetchall()
                     }
                     col_info["system_data_type"] = sub_rows["data_type"]
                     col_info["is_complex"] = True
+                    # Map values aren't surfaced as named children, so map
+                    # columns can't carry nested descriptions even if the
+                    # AS JSON payload had them — gate the fetch to types
+                    # whose children we actually expose.
+                    supports_nested_descriptions = col_type == "struct" or (
+                        col_type == "array"
+                        and re.match(
+                            r"^array\s*<\s*struct\b",
+                            sub_rows.get("data_type", raw_col_type),
+                            re.IGNORECASE,
+                        )
+                        is not None
+                    )
+                    if supports_nested_descriptions:
+                        if nested_descriptions_by_column is None:
+                            nested_descriptions_by_column = (
+                                _fetch_nested_descriptions_via_describe_json(
+                                    connection, kw.get("db_name"), schema, table_name
+                                )
+                            )
+                        nested_descriptions = nested_descriptions_by_column.get(
+                            col_name
+                        )
+                        if nested_descriptions:
+                            col_info["nested_descriptions"] = nested_descriptions
                 except (DatabaseError, KeyError) as err:
                     logger.error(
-                        f"Failed to fetch complex-type details for column "
-                        f"{col_name} in table {table_name}: {err}"
+                        f"Failed to fetch complex-type details for column {col_name} in table {table_name}: {err}"
                     )
                     logger.debug(traceback.format_exc())
             result.append(col_info)
         except Exception as err:  # pylint: disable=broad-except
             logger.warning(
-                f"Skipping column '{col_name}' in {schema}.{table_name} due to "
-                f"unexpected error: {err}"
+                f"Skipping column '{col_name}' in {schema}.{table_name} due to unexpected error: {err}"
             )
             logger.debug(traceback.format_exc())
     return result
@@ -333,7 +478,7 @@ def get_table_comment(  # pylint: disable=unused-argument
     )
     try:
         for result in list(cursor):
-            data = result.values()
+            data = tuple(result)
             if data[0] and data[0].strip() == "Comment":
                 return {"text": data[1] if data and data[1] else None}
     except Exception:
@@ -521,6 +666,13 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
             logger.debug(f"Failed to fetch catalogs due to: {soe}")
             self.is_older_version = True
 
+    def _process_complex_col_type(self, parsed_string: dict, column: dict) -> Column:
+        om_column = super()._process_complex_col_type(parsed_string, column)
+        nested_descriptions = column.get("nested_descriptions")
+        if nested_descriptions:
+            _apply_nested_descriptions(om_column, nested_descriptions, ())
+        return om_column
+
     @classmethod
     def create(
         cls, config_dict, metadata: OpenMetadata, pipeline_name: Optional[str] = None
@@ -629,12 +781,31 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
         self.column_tags.clear()
 
     def _add_to_tag_cache(
-        self, tag_dict: dict, key: Union[str, Tuple], value: Tuple[str, str]
+        self, tag_dict: dict, key: Union[str, Tuple], value: Tuple[str, str | None]
     ):
         if tag_dict.get(key):
             tag_dict.get(key).append(value)
         else:
             tag_dict[key] = [value]
+
+    @staticmethod
+    def _ometa_tag_call_args(tag_name: str, tag_value: str | None) -> dict:
+        """Map a Databricks (tag_name, tag_value) pair onto OM's
+        classification/tag pair, falling back to DATABRICKS_VALUELESS_CLASSIFICATION
+        when tag_value is empty or whitespace-only."""
+        if tag_value and str(tag_value).strip():
+            return {
+                "tags": [tag_value],
+                "classification_name": tag_name,
+                "tag_description": DATABRICKS_TAG,
+                "classification_description": DATABRICKS_TAG_CLASSIFICATION,
+            }
+        return {
+            "tags": [tag_name],
+            "classification_name": DATABRICKS_VALUELESS_CLASSIFICATION,
+            "tag_description": DATABRICKS_VALUELESS_CLASSIFICATION_DESCRIPTION,
+            "classification_description": DATABRICKS_VALUELESS_CLASSIFICATION_DESCRIPTION,
+        }
 
     def populate_tags_cache(self, database_name: str) -> None:
         """
@@ -652,8 +823,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 self._add_to_tag_cache(
                     self.catalog_tags,
                     tag.catalog_name,
-                    # tag value is an optional field, if tag value is not available use default tag value
-                    (tag.tag_name, tag.tag_value or DEFAULT_TAG_VALUE),
+                    (tag.tag_name, tag.tag_value),
                 )
         except Exception as exc:
             logger.debug(f"Failed to fetch catalog tags due to - {exc}")
@@ -666,8 +836,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 self._add_to_tag_cache(
                     self.schema_tags,
                     (tag.catalog_name, tag.schema_name),
-                    # tag value is an optional field, if tag value is not available use default tag value
-                    (tag.tag_name, tag.tag_value or DEFAULT_TAG_VALUE),
+                    (tag.tag_name, tag.tag_value),
                 )
         except Exception as exc:
             logger.debug(f"Failed to fetch schema tags due to - {exc}")
@@ -680,8 +849,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 self._add_to_tag_cache(
                     self.table_tags,
                     (tag.catalog_name, tag.schema_name, tag.table_name),
-                    # tag value is an optional field, if tag value is not available use default tag value
-                    (tag.tag_name, tag.tag_value or DEFAULT_TAG_VALUE),
+                    (tag.tag_name, tag.tag_value),
                 )
         except Exception as exc:
             logger.debug(f"Failed to fetch table tags due to - {exc}")
@@ -696,17 +864,11 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                     self._add_to_tag_cache(
                         self.column_tags.get(tag_table_id),
                         tag.column_name,
-                        # tag value is an optional field, if tag value is not available use default tag value
-                        (tag.tag_name, tag.tag_value or DEFAULT_TAG_VALUE),
+                        (tag.tag_name, tag.tag_value),
                     )
                 else:
                     self.column_tags[tag_table_id] = {
-                        tag.column_name: [
-                            (
-                                tag.tag_name,
-                                tag.tag_value or DEFAULT_TAG_VALUE,
-                            )
-                        ]
+                        tag.column_name: [(tag.tag_name, tag.tag_value)]
                     }
         except Exception as exc:
             logger.debug(f"Failed to fetch column tags due to - {exc}")
@@ -764,6 +926,8 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
         try:
             catalog_tags = self.catalog_tags.get(database_name, [])
             for tag_name, tag_value in catalog_tags:
+                if not tag_name:
+                    continue
                 yield from get_ometa_tag_and_classification(
                     tag_fqn=fqn.build(
                         self.metadata,
@@ -771,10 +935,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                         service_name=self.context.get().database_service,
                         database_name=database_name,
                     ),
-                    tags=[tag_value],
-                    classification_name=tag_name,
-                    tag_description=DATABRICKS_TAG,
-                    classification_description=DATABRICKS_TAG_CLASSIFICATION,
+                    **self._ometa_tag_call_args(tag_name, tag_value),
                     metadata=self.metadata,
                     system_tags=True,
                 )
@@ -799,6 +960,8 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 (self.context.get().database, schema_name), []
             )
             for tag_name, tag_value in schema_tags:
+                if not tag_name:
+                    continue
                 yield from get_ometa_tag_and_classification(
                     tag_fqn=fqn.build(
                         self.metadata,
@@ -807,10 +970,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                         database_name=self.context.get().database,
                         schema_name=schema_name,
                     ),
-                    tags=[tag_value],
-                    classification_name=tag_name,
-                    tag_description=DATABRICKS_TAG,
-                    classification_description=DATABRICKS_TAG_CLASSIFICATION,
+                    **self._ometa_tag_call_args(tag_name, tag_value),
                     metadata=self.metadata,
                     system_tags=True,
                 )
@@ -838,6 +998,8 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 [],
             )
             for tag_name, tag_value in table_tags:
+                if not tag_name:
+                    continue
                 yield from get_ometa_tag_and_classification(
                     tag_fqn=fqn.build(
                         self.metadata,
@@ -847,10 +1009,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                         schema_name=self.context.get().database_schema,
                         table_name=table_name,
                     ),
-                    tags=[tag_value],
-                    classification_name=tag_name,
-                    tag_description=DATABRICKS_TAG,
-                    classification_description=DATABRICKS_TAG_CLASSIFICATION,
+                    **self._ometa_tag_call_args(tag_name, tag_value),
                     metadata=self.metadata,
                     system_tags=True,
                 )
@@ -865,6 +1024,8 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
             )
             for column_name, tags in column_tags.items():
                 for tag_name, tag_value in tags or []:
+                    if not tag_name:
+                        continue
                     yield from get_ometa_tag_and_classification(
                         tag_fqn=fqn.build(
                             self.metadata,
@@ -875,10 +1036,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                             table_name=table_name,
                             column_name=column_name,
                         ),
-                        tags=[tag_value],
-                        classification_name=tag_name,
-                        tag_description=DATABRICKS_TAG,
-                        classification_description=DATABRICKS_TAG_CLASSIFICATION,
+                        **self._ometa_tag_call_args(tag_name, tag_value),
                         metadata=self.metadata,
                         system_tags=True,
                     )
@@ -906,7 +1064,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 schema=schema_name,
             )
             for result in list(cursor):
-                data = result.values()
+                data = tuple(result)
                 if data[0] and data[0].strip() == "Comment":
                     description = data[1] if data and data[1] else None
                     return description
@@ -937,7 +1095,7 @@ class DatabricksSource(ExternalTableLineageMixin, CommonDbSourceService, MultiDB
                 schema=schema_name,
             )
             for result in list(cursor):
-                data = result.values()
+                data = tuple(result)
                 if data[0] and data[0].strip() == "Comment":
                     description = data[1] if data and data[1] else None
                 elif data[0] and data[0].strip() == "Location":

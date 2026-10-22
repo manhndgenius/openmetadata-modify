@@ -179,7 +179,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await addOwner({
         page,
-        owner: user2.responseData.displayName,
+        owner: user2.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -212,7 +212,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
       await selectOption(
         page,
         ruleLocator.locator('.rule--value .ant-select'),
-        user.responseData.displayName,
+        user.getUserDisplayName(),
         true
       );
 
@@ -237,7 +237,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await updateOwner({
         page,
-        owner: user.responseData.displayName,
+        owner: user.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -286,7 +286,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await addOwner({
         page,
-        owner: user2.responseData.displayName,
+        owner: user2.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -319,7 +319,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
       await selectOption(
         page,
         ruleLocator.locator('.rule--value .ant-select'),
-        user.responseData.displayName,
+        user.getUserDisplayName(),
         true
       );
 
@@ -345,7 +345,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await updateOwner({
         page,
-        owner: user.responseData.displayName,
+        owner: user.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -393,7 +393,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await addOwner({
         page,
-        owner: user2.responseData.displayName,
+        owner: user2.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -426,7 +426,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
       await selectOption(
         page,
         ruleLocator.locator('.rule--value .ant-select'),
-        user.responseData.displayName,
+        user.getUserDisplayName(),
         true
       );
 
@@ -451,7 +451,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
 
       await updateOwner({
         page,
-        owner: user.responseData.displayName,
+        owner: user.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -538,7 +538,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
     await test.step('Should Passed since entity has owner', async () => {
       await addOwner({
         page,
-        owner: user2.responseData.displayName,
+        owner: user2.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -623,7 +623,7 @@ test.describe('Data Contracts Semantics Rule Owner', () => {
     await test.step('Should Failed since entity has owner', async () => {
       await addOwner({
         page,
-        owner: user2.responseData.displayName,
+        owner: user2.getUserDisplayName(),
         type: 'Users',
         endpoint: EntityTypeEndpoint.Table,
         dataTestId: 'data-assets-header',
@@ -1559,6 +1559,8 @@ test.describe('Data Contracts Semantics Rule Domain', () => {
   });
 });
 
+// Version comparison tests use extreme thresholds (0.01 / 99.9) so results are
+// deterministic regardless of how many background version bumps CI introduces.
 test.describe('Data Contracts Semantics Rule Version', () => {
   test('Validate Entity Version Is', async ({ page, browser }) => {
     test.slow();
@@ -1808,9 +1810,7 @@ test.describe('Data Contracts Semantics Rule Version', () => {
 
     const { apiContext, afterAction } = await performAdminLogin(browser);
     const table = new TableClass();
-    const domain = new Domain();
     await table.create(apiContext);
-    await domain.create(apiContext);
     await afterAction();
 
     await test.step('Open contract section and start adding contract', async () => {
@@ -1841,11 +1841,12 @@ test.describe('Data Contracts Semantics Rule Version', () => {
         DATA_CONTRACT_SEMANTIC_OPERATIONS.less
       );
 
+      // Use 99.9 — any realistic entity version is always below this, so the
+      // check passes regardless of how many version bumps CI introduces.
       await ruleLocator
         .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input')
-        .fill('0.2');
+        .fill('99.9');
 
-      // save and trigger contract validation
       await saveAndTriggerDataContractValidation(page, true);
 
       await expect(
@@ -1857,26 +1858,19 @@ test.describe('Data Contracts Semantics Rule Version', () => {
     });
 
     await test.step('Contract with < condition for version should failed', async () => {
-      await assignSingleSelectDomain(page, domain.responseData);
+      // Lower the threshold to 0.01 — any realistic entity version always
+      // exceeds this, making the < check fail regardless of version bumps.
+      await clickEditContractButton(page);
+      await page.getByRole('tab', { name: 'Semantics' }).click();
 
-      await page.getByTestId('manage-contract-actions').click();
+      const versionInput = page
+        .locator('.group')
+        .first()
+        .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input');
+      await versionInput.clear();
+      await versionInput.fill('0.01');
 
-      await page.waitForSelector('.contract-action-dropdown', {
-        state: 'visible',
-      });
-
-      const runNowResponse = page.waitForResponse(
-        '/api/v1/dataContracts/*/validate'
-      );
-      await page.getByTestId('contract-run-now-button').click();
-      await runNowResponse;
-
-      await page.reload();
-
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
+      await saveAndTriggerDataContractValidation(page);
 
       await expect(
         page.getByTestId('contract-status-card-item-semantics-status')
@@ -1893,9 +1887,7 @@ test.describe('Data Contracts Semantics Rule Version', () => {
 
     const { apiContext, afterAction } = await performAdminLogin(browser);
     const table = new TableClass();
-    const domain = new Domain();
     await table.create(apiContext);
-    await domain.create(apiContext);
     await afterAction();
 
     await test.step('Open contract section and start adding contract', async () => {
@@ -1926,11 +1918,12 @@ test.describe('Data Contracts Semantics Rule Version', () => {
         DATA_CONTRACT_SEMANTIC_OPERATIONS.greater
       );
 
+      // Use 99.9 — any realistic entity version is always below this, so
+      // entity_version > 99.9 always fails regardless of version bumps in CI.
       await ruleLocator
         .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input')
-        .fill('0.1');
+        .fill('99.9');
 
-      // save and trigger contract validation
       await saveAndTriggerDataContractValidation(page, true);
 
       await expect(
@@ -1943,26 +1936,19 @@ test.describe('Data Contracts Semantics Rule Version', () => {
     });
 
     await test.step('Contract with > condition for version should passed', async () => {
-      await assignSingleSelectDomain(page, domain.responseData);
+      // Lower the threshold to 0.01 — any realistic entity version always
+      // exceeds this, making the > check pass regardless of version bumps.
+      await clickEditContractButton(page);
+      await page.getByRole('tab', { name: 'Semantics' }).click();
 
-      await page.getByTestId('manage-contract-actions').click();
+      const versionInput = page
+        .locator('.group')
+        .first()
+        .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input');
+      await versionInput.clear();
+      await versionInput.fill('0.01');
 
-      await page.waitForSelector('.contract-action-dropdown', {
-        state: 'visible',
-      });
-
-      const runNowResponse = page.waitForResponse(
-        '/api/v1/dataContracts/*/validate'
-      );
-      await page.getByTestId('contract-run-now-button').click();
-      await runNowResponse;
-
-      await page.reload();
-
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
+      await saveAndTriggerDataContractValidation(page);
 
       await expect(
         page.getByTestId('contract-status-card-item-semantics-status')
@@ -1981,9 +1967,7 @@ test.describe('Data Contracts Semantics Rule Version', () => {
 
     const { apiContext, afterAction } = await performAdminLogin(browser);
     const table = new TableClass();
-    const domain = new Domain();
     await table.create(apiContext);
-    await domain.create(apiContext);
     await afterAction();
 
     await test.step('Open contract section and start adding contract', async () => {
@@ -2014,11 +1998,12 @@ test.describe('Data Contracts Semantics Rule Version', () => {
         DATA_CONTRACT_SEMANTIC_OPERATIONS.less_equal
       );
 
+      // Use 99.9 — any realistic entity version is always below this, so
+      // entity_version <= 99.9 always passes regardless of version bumps in CI.
       await ruleLocator
         .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input')
-        .fill('0.1');
+        .fill('99.9');
 
-      // save and trigger contract validation
       await saveAndTriggerDataContractValidation(page, true);
 
       await expect(
@@ -2030,26 +2015,19 @@ test.describe('Data Contracts Semantics Rule Version', () => {
     });
 
     await test.step('Contract with <= condition for version should failed', async () => {
-      await assignSingleSelectDomain(page, domain.responseData);
+      // Lower the threshold to 0.01 — any realistic entity version always
+      // exceeds this, making the <= check fail regardless of version bumps.
+      await clickEditContractButton(page);
+      await page.getByRole('tab', { name: 'Semantics' }).click();
 
-      await page.getByTestId('manage-contract-actions').click();
+      const versionInput = page
+        .locator('.group')
+        .first()
+        .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input');
+      await versionInput.clear();
+      await versionInput.fill('0.01');
 
-      await page.waitForSelector('.contract-action-dropdown', {
-        state: 'visible',
-      });
-
-      const runNowResponse = page.waitForResponse(
-        '/api/v1/dataContracts/*/validate'
-      );
-      await page.getByTestId('contract-run-now-button').click();
-      await runNowResponse;
-
-      await page.reload();
-
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
+      await saveAndTriggerDataContractValidation(page);
 
       await expect(
         page.getByTestId('contract-status-card-item-semantics-status')
@@ -2069,9 +2047,7 @@ test.describe('Data Contracts Semantics Rule Version', () => {
 
     const { apiContext, afterAction } = await performAdminLogin(browser);
     const table = new TableClass();
-    const domain = new Domain();
     await table.create(apiContext);
-    await domain.create(apiContext);
     await afterAction();
 
     await test.step('Open contract section and start adding contract', async () => {
@@ -2102,11 +2078,12 @@ test.describe('Data Contracts Semantics Rule Version', () => {
         DATA_CONTRACT_SEMANTIC_OPERATIONS.less_equal
       );
 
+      // Use 99.9 — any realistic entity version is always below this, so
+      // entity_version >= 99.9 always fails regardless of version bumps in CI.
       await ruleLocator
         .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input')
-        .fill('0.1');
+        .fill('99.9');
 
-      // save and trigger contract validation
       await saveAndTriggerDataContractValidation(page, true);
 
       await expect(
@@ -2117,27 +2094,20 @@ test.describe('Data Contracts Semantics Rule Version', () => {
       ).not.toBeVisible();
     });
 
-    await test.step('Contract with >= condition for version should failed', async () => {
-      await assignSingleSelectDomain(page, domain.responseData);
+    await test.step('Contract with >= condition for version should passed', async () => {
+      // Lower the threshold to 0.01 — any realistic entity version always
+      // exceeds this, making the >= check pass regardless of version bumps.
+      await clickEditContractButton(page);
+      await page.getByRole('tab', { name: 'Semantics' }).click();
 
-      await page.getByTestId('manage-contract-actions').click();
+      const versionInput = page
+        .locator('.group')
+        .first()
+        .locator('.rule--value .rule--widget--NUMBER .ant-input-number-input');
+      await versionInput.clear();
+      await versionInput.fill('0.01');
 
-      await page.waitForSelector('.contract-action-dropdown', {
-        state: 'visible',
-      });
-
-      const runNowResponse = page.waitForResponse(
-        '/api/v1/dataContracts/*/validate'
-      );
-      await page.getByTestId('contract-run-now-button').click();
-      await runNowResponse;
-
-      await page.reload();
-
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
+      await saveAndTriggerDataContractValidation(page);
 
       await expect(
         page.getByTestId('contract-status-card-item-semantics-status')
@@ -2539,7 +2509,7 @@ test.describe('Data Contracts Semantics Rule DataProduct', () => {
       ).not.toBeVisible();
     });
 
-    await test.step('DataProduct with Any In condition should passed', async () => {
+    await test.step('DataProduct with Not In condition should failed with excluded product', async () => {
       // Move to Schema Tab
       await page.getByTestId('schema').click();
 
@@ -2575,6 +2545,50 @@ test.describe('Data Contracts Semantics Rule DataProduct', () => {
       await page.waitForSelector('[data-testid="loader"]', {
         state: 'detached',
       });
+
+      await expect(
+        page.getByTestId('contract-status-card-item-semantics-status')
+      ).toContainText('Failed');
+
+      await expect(
+        page.getByTestId('data-contract-latest-result-btn')
+      ).toContainText('Contract Failed');
+    });
+
+    await test.step('DataProduct with Not In condition should failed when table has multiple products one of which is excluded', async () => {
+      // Table currently has createdDataProducts[0] (the excluded one).
+      // Assign createdDataProducts[1] as well so the table has both products.
+      // The rule still excludes createdDataProducts[0], so validation must fail
+      // even though createdDataProducts[1] is not excluded.
+      await page.getByTestId('schema').click();
+
+      await waitForAllLoadersToDisappear(page);
+
+      await assignDataProduct(
+        page,
+        domain.responseData,
+        [createdDataProducts[1].responseData],
+        'Edit'
+      );
+
+      await page.click('[data-testid="contract"]');
+      await waitForAllLoadersToDisappear(page);
+
+      await page.getByTestId('manage-contract-actions').click();
+
+      await page.getByTestId('contract-action-dropdown').waitFor({
+        state: 'visible',
+      });
+
+      const runNowResponse = page.waitForResponse(
+        '/api/v1/dataContracts/*/validate'
+      );
+      await page.getByTestId('contract-run-now-button').click();
+      await runNowResponse;
+
+      await page.reload();
+
+      await waitForAllLoadersToDisappear(page);
 
       await expect(
         page.getByTestId('contract-status-card-item-semantics-status')

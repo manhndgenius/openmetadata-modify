@@ -42,7 +42,21 @@ export interface CandidateRule {
   edited_parameters?: Record<string, any> | null;
 }
 
+export interface SavedRuleTableSummary {
+  table_fqn: string;
+  table_name: string;
+  rule_count: number;
+}
+
+export interface SavedRulesResponse {
+  items: CandidateRule[];
+  total: number;
+  tables: SavedRuleTableSummary[];
+  status_counts: Record<string, number>;
+}
+
 export type RuleEngine = 'BASIC' | 'ADVANCED' | 'STATISTICAL';
+export type GoLiveRuleEngine = Exclude<RuleEngine, 'STATISTICAL'>;
 export type TargetScope =
   | { type: 'TABLES'; table_fqns: string[] }
   | { type: 'SCHEMAS'; schema_fqns: string[] }
@@ -68,7 +82,7 @@ export interface CatalogOption {
 
 export interface BulkGenerationRequest {
   scope: TargetScope;
-  engines: ['BASIC'];
+  engines: GoLiveRuleEngine[];
   options?: {
     use_llm?: boolean;
     min_confidence?: number;
@@ -78,6 +92,7 @@ export interface BulkGenerationRequest {
   concurrency?: {
     metadata: number;
     basic: number;
+    advanced: number;
   };
 }
 
@@ -195,11 +210,11 @@ export interface AdvancedRuleResponse {
 export interface StatisticalCandidateResponse {
   id: string;
   rule_type:
-  | 'columnValueMeanToBeBetween'
-  | 'columnValueMedianToBeBetween'
-  | 'columnValueStdDevToBeBetween'
-  | 'columnValueMinToBeBetween'
-  | 'columnValueMaxToBeBetween';
+    | 'columnValueMeanToBeBetween'
+    | 'columnValueMedianToBeBetween'
+    | 'columnValueStdDevToBeBetween'
+    | 'columnValueMinToBeBetween'
+    | 'columnValueMaxToBeBetween';
   // Current BE response uses `column`; keep `target_columns` for backward
   // compatibility with the older FE API contract.
   column?: string;
@@ -299,7 +314,7 @@ export interface NtRuleConfigField {
   integer?: boolean;
   columns?: Array<{
     name: string;
-    control: 'TEXT' | 'TAG_LIST';
+    control: 'TEXT' | 'TAG_LIST' | 'DATA_TYPE_MULTI_SELECT';
   }>;
 }
 
@@ -338,77 +353,88 @@ export const FALLBACK_NT_DEFINITIONS: NtTestDefinition[] = [
     name: 'NT1_tableRowCountToBeBetween',
     fullyQualifiedName: 'governance.nt.NT1_tableRowCountToBeBetween',
     displayName: 'NT1: Table Row Count Between Bounds',
-    description: 'Đảm bảo tổng số lượng bản ghi của bảng nằm trong ngưỡng tối thiểu và tối đa cho phép.',
+    description:
+      'Đảm bảo tổng số lượng bản ghi của bảng nằm trong ngưỡng tối thiểu và tối đa cho phép.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT2_columnValuesToBeNotNull',
     fullyQualifiedName: 'governance.nt.NT2_columnValuesToBeNotNull',
     displayName: 'NT2: Primary Column Not Null',
-    description: 'Đảm bảo các cột định danh (ID, key) không được chứa bất kỳ giá trị NULL nào.',
+    description:
+      'Đảm bảo các cột định danh (ID, key) không được chứa bất kỳ giá trị NULL nào.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT3_columnValuesToBeUnique',
     fullyQualifiedName: 'governance.nt.NT3_columnValuesToBeUnique',
     displayName: 'NT3: Primary Column Uniqueness',
-    description: 'Đảm bảo tính duy nhất tuyệt đối của trường khóa chính hoặc mã định danh.',
+    description:
+      'Đảm bảo tính duy nhất tuyệt đối của trường khóa chính hoặc mã định danh.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT4_columnValueLengthsToBeBetween',
     fullyQualifiedName: 'governance.nt.NT4_columnValueLengthsToBeBetween',
     displayName: 'NT4: String Field Length Bounds',
-    description: 'Kiểm tra độ dài ký tự của các chuỗi text không vượt quá giới hạn schema quy định.',
+    description:
+      'Kiểm tra độ dài ký tự của các chuỗi text không vượt quá giới hạn schema quy định.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT5_columnValuesToBeBetween',
     fullyQualifiedName: 'governance.nt.NT5_columnValuesToBeBetween',
     displayName: 'NT5: Numeric Range Sanity Check',
-    description: 'Kiểm tra các chỉ số tài chính, số lượng, giá tiền không âm và nằm trong dải thực tế.',
+    description:
+      'Kiểm tra các chỉ số tài chính, số lượng, giá tiền không âm và nằm trong dải thực tế.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT6_columnValuesToBeInSet',
     fullyQualifiedName: 'governance.nt.NT6_columnValuesToBeInSet',
     displayName: 'NT6: Status & Category Allowed Set',
-    description: 'Xác thực giá trị trạng thái hoặc loại dữ liệu thuộc danh mục enum chuẩn.',
+    description:
+      'Xác thực giá trị trạng thái hoặc loại dữ liệu thuộc danh mục enum chuẩn.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT7_columnValuesToMatchRegex',
     fullyQualifiedName: 'governance.nt.NT7_columnValuesToMatchRegex',
     displayName: 'NT7: Standard Format Pattern Regex',
-    description: 'Kiểm tra định dạng email, số điện thoại, SKU hoặc mã số thuế khớp Regex chuẩn.',
+    description:
+      'Kiểm tra định dạng email, số điện thoại, SKU hoặc mã số thuế khớp Regex chuẩn.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT8_columnValueMeanToBeBetween',
     fullyQualifiedName: 'governance.nt.NT8_columnValueMeanToBeBetween',
     displayName: 'NT8: Statistical Mean Metric Profiling',
-    description: 'Giám sát giá trị trung bình thống kê để phát hiện bất thường lệch dữ liệu tổng thể.',
+    description:
+      'Giám sát giá trị trung bình thống kê để phát hiện bất thường lệch dữ liệu tổng thể.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT9_columnValueMedianToBeBetween',
     fullyQualifiedName: 'governance.nt.NT9_columnValueMedianToBeBetween',
     displayName: 'NT9: Statistical Median Distribution',
-    description: 'Giám sát giá trị trung vị chống nhiễu bởi các điểm ngoại lai (outliers).',
+    description:
+      'Giám sát giá trị trung vị chống nhiễu bởi các điểm ngoại lai (outliers).',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT10_columnValueStdDevToBeBetween',
     fullyQualifiedName: 'governance.nt.NT10_columnValueStdDevToBeBetween',
     displayName: 'NT10: Statistical Standard Deviation Bound',
-    description: 'Kiểm soát mức độ phân tán của dữ liệu nằm trong biên phương sai cho phép.',
+    description:
+      'Kiểm soát mức độ phân tán của dữ liệu nằm trong biên phương sai cho phép.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT11_columnValueMinToBeBetween',
     fullyQualifiedName: 'governance.nt.NT11_columnValueMinToBeBetween',
     displayName: 'NT11: Observed Minimum Floor Value',
-    description: 'Xác thực cận dưới của giá trị không được sụt giảm bất thường.',
+    description:
+      'Xác thực cận dưới của giá trị không được sụt giảm bất thường.',
     status: 'NOT_APPLIED',
   },
   {
@@ -422,21 +448,24 @@ export const FALLBACK_NT_DEFINITIONS: NtTestDefinition[] = [
     name: 'NT13_tableTemporalSequenceConstraint',
     fullyQualifiedName: 'governance.nt.NT13_tableTemporalSequenceConstraint',
     displayName: 'NT13: Temporal Date Sequence Integrity',
-    description: 'Đảm bảo ngày hoàn thành / cập nhật luôn lớn hơn hoặc bằng ngày tạo bản ghi.',
+    description:
+      'Đảm bảo ngày hoàn thành / cập nhật luôn lớn hơn hoặc bằng ngày tạo bản ghi.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT14_tableCrossColumnDependency',
     fullyQualifiedName: 'governance.nt.NT14_tableCrossColumnDependency',
     displayName: 'NT14: Cross-Column Co-occurrence Consistency',
-    description: 'Ràng buộc quan hệ logic giữa hai hoặc nhiều cột thuộc cùng một bảng.',
+    description:
+      'Ràng buộc quan hệ logic giữa hai hoặc nhiều cột thuộc cùng một bảng.',
     status: 'NOT_APPLIED',
   },
   {
     name: 'NT15_tableCustomSqlSanityCheck',
     fullyQualifiedName: 'governance.nt.NT15_tableCustomSqlSanityCheck',
     displayName: 'NT15: Custom Business Logic Governance',
-    description: 'Bộ quy tắc nghiệp vụ chuyên sâu đặc thù doanh nghiệp viết bằng câu lệnh SQL.',
+    description:
+      'Bộ quy tắc nghiệp vụ chuyên sâu đặc thù doanh nghiệp viết bằng câu lệnh SQL.',
     status: 'NOT_APPLIED',
   },
 ];
@@ -529,16 +558,10 @@ export interface TableOption {
   schema?: string;
 }
 
-const LOCAL_STORAGE_KEY = 'dq_rule_recommender_base_url';
-
-export const DEFAULT_API_BASE = 'http://localhost:8000/api/v1';
+export const DEFAULT_API_BASE = '/dq-api/api/v1';
 
 export const getRecommenderBaseUrl = (): string => {
-  return localStorage.getItem(LOCAL_STORAGE_KEY) || DEFAULT_API_BASE;
-};
-
-export const setRecommenderBaseUrl = (url: string): void => {
-  localStorage.setItem(LOCAL_STORAGE_KEY, url);
+  return DEFAULT_API_BASE;
 };
 
 export const ruleRecommenderAPI = {
@@ -762,14 +785,11 @@ export const ruleRecommenderAPI = {
   async startNtApplicationJob(
     scope: TargetScope
   ): Promise<NtApplicationJobSummary> {
-    const res = await fetch(
-      `${getRecommenderBaseUrl()}/nt-application-jobs`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope }),
-      }
-    );
+    const res = await fetch(`${getRecommenderBaseUrl()}/nt-application-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
 
@@ -779,9 +799,7 @@ export const ruleRecommenderAPI = {
     return res.json();
   },
 
-  async getNtApplicationJob(
-    jobId: string
-  ): Promise<NtApplicationJobSummary> {
+  async getNtApplicationJob(jobId: string): Promise<NtApplicationJobSummary> {
     const res = await fetch(
       `${getRecommenderBaseUrl()}/nt-application-jobs/${encodeURIComponent(
         jobId
@@ -940,6 +958,39 @@ export const ruleRecommenderAPI = {
   },
 
   /**
+   * Load every recommendation persisted in PostgreSQL. Unlike getRules, this
+   * endpoint never generates fallback/mock candidates.
+   */
+  async getSavedRules(): Promise<SavedRulesResponse> {
+    const res = await fetch(`${getRecommenderBaseUrl()}/rules/saved`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(error.detail || `Cannot load saved rules: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const rawItems = Array.isArray(data.items) ? data.items : [];
+
+    return {
+      items: rawItems.map((rule: any, index: number) =>
+        this.normalizeRule(
+          rule,
+          rule.table_name || rule.table_fqn || 'table',
+          index,
+          rule.table_fqn
+        )
+      ),
+      total: Number(data.total ?? rawItems.length),
+      tables: Array.isArray(data.tables) ? data.tables : [],
+      status_counts:
+        data.status_counts && typeof data.status_counts === 'object'
+          ? data.status_counts
+          : {},
+    };
+  },
+
+  /**
    * Trigger rule recommendation engine.
    * BE endpoint: POST /recommendations/generate
    * Response shape: { rules: CandidateRule[], total_rules, row_count, ... }
@@ -967,10 +1018,10 @@ export const ruleRecommenderAPI = {
         const raw = Array.isArray(data.rules)
           ? data.rules
           : Array.isArray(data.candidates)
-            ? data.candidates
-            : Array.isArray(data)
-              ? data
-              : [];
+          ? data.candidates
+          : Array.isArray(data)
+          ? data
+          : [];
         if (raw.length > 0) {
           return raw.map(
             (r: any, idx: number): CandidateRule =>
@@ -1005,10 +1056,10 @@ export const ruleRecommenderAPI = {
     const targetColumns: string[] = Array.isArray(r.target_columns)
       ? r.target_columns
       : Array.isArray(r.columns)
-        ? r.columns
-        : r.column_name
-          ? [r.column_name]
-          : [];
+      ? r.columns
+      : r.column_name
+      ? [r.column_name]
+      : [];
 
     const columnName = targetColumns[0] ?? r.column_name ?? null;
     const scope: CandidateRule['scope'] =
@@ -1017,11 +1068,11 @@ export const ruleRecommenderAPI = {
     const rawStatus = String(r.status || 'DRAFT').toUpperCase();
     const status: CandidateRule['status'] =
       rawStatus === 'PENDING' ||
-        rawStatus === 'DRAFT' ||
-        rawStatus === 'ACCEPTED' ||
-        rawStatus === 'EDITED' ||
-        rawStatus === 'REJECTED' ||
-        rawStatus === 'APPLIED'
+      rawStatus === 'DRAFT' ||
+      rawStatus === 'ACCEPTED' ||
+      rawStatus === 'EDITED' ||
+      rawStatus === 'REJECTED' ||
+      rawStatus === 'APPLIED'
         ? (rawStatus as CandidateRule['status'])
         : 'DRAFT';
     const parameters = r.parameters ?? r.params ?? {};
@@ -1204,8 +1255,8 @@ export const ruleRecommenderAPI = {
     )
       ? data.recommendations
       : Array.isArray(data.candidates)
-        ? data.candidates
-        : [];
+      ? data.candidates
+      : [];
 
     return raw.map((r, idx) => {
       const profileHistory = Array.isArray(r.profile_history)
@@ -1247,26 +1298,30 @@ export const ruleRecommenderAPI = {
    */
   async reviewRule(
     ruleId: string,
-    action: 'ACCEPT' | 'REJECT',
+    action: 'ACCEPTED' | 'REJECTED' | 'EDITED',
     parameters?: Record<string, any>
   ): Promise<boolean> {
-    try {
-      const res = await fetch(
-        `${getRecommenderBaseUrl()}/rules/${encodeURIComponent(ruleId)}/review`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: action.toLowerCase(),
-            parameters,
-          }),
-        }
-      );
+    const res = await fetch(
+      `${getRecommenderBaseUrl()}/rules/${encodeURIComponent(ruleId)}/review`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action,
+          edited_parameters: parameters,
+        }),
+      }
+    );
 
-      return res.ok;
-    } catch {
-      return true; // Local state will update
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+
+      throw new Error(
+        error.detail || `Cannot update rule status: ${res.status}`
+      );
     }
+
+    return true;
   },
 
   /**
@@ -1275,24 +1330,73 @@ export const ruleRecommenderAPI = {
   async publishRules(
     tableFqn: string,
     rules: CandidateRule[] | string[]
-  ): Promise<{ publishedCount: number; message: string; failures?: string[] }> {
+  ): Promise<{
+    publishedCount: number;
+    publishedRuleIds: string[];
+    message: string;
+    failures?: string[];
+  }> {
     const tableName = tableFqn.split('.').pop() || tableFqn;
+    const ruleIds = rules.map((rule) =>
+      typeof rule === 'string' ? rule : rule.id
+    );
+
+    // The DQ backend owns dialect transpilation, validation, OpenMetadata
+    // publication and persisted lifecycle state. Never bypass it from the UI.
+    const response = await fetch(`${getRecommenderBaseUrl()}/rules/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_name: tableName,
+        table_fqn: tableFqn,
+        rule_ids: ruleIds,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.detail || `Cannot publish rules: ${response.status}`
+      );
+    }
+
+    const backendPublishedRuleIds = Array.isArray(result.applied_rule_ids)
+      ? result.applied_rule_ids
+      : [];
+    const backendFailures = Array.isArray(result.failed_test_cases)
+      ? result.failed_test_cases.map(
+          (failure: { rule_id?: string; error?: string }) =>
+            failure.rule_id || failure.error || 'Unknown rule'
+        )
+      : [];
+
+    return {
+      publishedCount: Number(
+        result.published_count ?? backendPublishedRuleIds.length
+      ),
+      publishedRuleIds: backendPublishedRuleIds,
+      message:
+        result.message ||
+        `Published ${backendPublishedRuleIds.length} rule(s) to OpenMetadata.`,
+      failures: backendFailures,
+    };
 
     // Convert string IDs to candidate rules if array of strings was passed
     const rulesList: CandidateRule[] =
       rules.length > 0 && typeof rules[0] === 'string'
         ? (rules as string[]).map((id) => ({
-          id,
-          rule_type: 'columnValuesToBeNotNull',
-          table_name: tableName,
-          scope: 'table',
-          confidence: 0.95,
-          reason: 'Rule published from recommender',
-          status: 'ACCEPTED',
-        }))
+            id,
+            rule_type: 'columnValuesToBeNotNull',
+            table_name: tableName,
+            scope: 'table',
+            confidence: 0.95,
+            reason: 'Rule published from recommender',
+            status: 'ACCEPTED',
+          }))
         : (rules as CandidateRule[]);
 
     let publishedCount = 0;
+    const publishedRuleIds: string[] = [];
     const failures: string[] = [];
 
     // Publish each rule to OpenMetadata native testCase endpoint
@@ -1303,6 +1407,16 @@ export const ruleRecommenderAPI = {
           !rule.parameters?.regex
         ) {
           failures.push(`${rule.rule_type} (missing regex)`);
+
+          continue;
+        }
+
+        if (
+          rule.rule_type === 'columnValuesToBeInSet' &&
+          (!Array.isArray(rule.parameters?.allowedValues) ||
+            rule.parameters.allowedValues.length === 0)
+        ) {
+          failures.push(`${rule.rule_type} (missing allowedValues)`);
 
           continue;
         }
@@ -1362,7 +1476,7 @@ export const ruleRecommenderAPI = {
         } else if (rule.rule_type in STATISTICAL_PARAM_NAMES) {
           const paramNames =
             STATISTICAL_PARAM_NAMES[
-            rule.rule_type as StatisticalCandidateResponse['rule_type']
+              rule.rule_type as StatisticalCandidateResponse['rule_type']
             ];
           if (rule.parameters?.minValue !== undefined) {
             parameterValues.push({
@@ -1420,6 +1534,7 @@ export const ruleRecommenderAPI = {
         // PUT to OpenMetadata
         await axiosClient.put('/dataQuality/testCases', payload);
         publishedCount++;
+        publishedRuleIds.push(rule.id);
       } catch (err: any) {
         // eslint-disable-next-line no-console
         console.warn(`Failed to publish test case for ${rule.rule_type}:`, err);
@@ -1442,10 +1557,11 @@ export const ruleRecommenderAPI = {
       // Backend is optional/local
     }
 
-    const finalCount = publishedCount > 0 ? publishedCount : rulesList.length;
+    const finalCount = publishedCount;
 
     return {
       publishedCount: finalCount,
+      publishedRuleIds,
       message: `Đã publish thành công ${finalCount} quy tắc vào OpenMetadata!`,
       failures,
     };
@@ -1510,7 +1626,9 @@ export const ruleRecommenderAPI = {
   /** Load one effective NT config and its optimistic-lock version. */
   async getNtRuleConfig(ruleName: string): Promise<NtRuleConfigState> {
     const res = await fetch(
-      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config`
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(
+        ruleName
+      )}/config`
     );
     if (!res.ok) {
       throw new Error(`Cannot load NT rule configuration: ${res.status}`);
@@ -1527,7 +1645,9 @@ export const ruleRecommenderAPI = {
     enabled = true
   ): Promise<NtRuleConfigState> {
     const res = await fetch(
-      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config`,
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(
+        ruleName
+      )}/config`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1567,7 +1687,9 @@ export const ruleRecommenderAPI = {
       expected_version: String(expectedVersion),
     });
     const res = await fetch(
-      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(ruleName)}/config?${query}`,
+      `${getRecommenderBaseUrl()}/nt-rules/${encodeURIComponent(
+        ruleName
+      )}/config?${query}`,
       { method: 'DELETE' }
     );
     if (!res.ok) {
@@ -1651,7 +1773,6 @@ export const ruleRecommenderAPI = {
     return res.json();
   },
 
-
   /**
    * List test cases that already exist on a table via the recommender backend
    */
@@ -1670,8 +1791,8 @@ export const ruleRecommenderAPI = {
       return Array.isArray(data.data)
         ? data.data
         : Array.isArray(data)
-          ? data
-          : [];
+        ? data
+        : [];
     } catch {
       return [];
     }
@@ -1723,8 +1844,8 @@ export const ruleRecommenderAPI = {
             typeof data.f1_score === 'number'
               ? data.f1_score
               : typeof data.f1 === 'number'
-                ? data.f1
-                : 0,
+              ? data.f1
+              : 0,
           categories: data.categories ?? {},
         };
       }

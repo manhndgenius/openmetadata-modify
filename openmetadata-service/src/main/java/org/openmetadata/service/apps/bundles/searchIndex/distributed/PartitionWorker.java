@@ -43,6 +43,7 @@ import org.openmetadata.service.search.ReindexContext;
 import org.openmetadata.service.util.RestUtil;
 import org.openmetadata.service.workflows.searchIndex.PaginatedEntitiesSource;
 import org.openmetadata.service.workflows.searchIndex.PaginatedEntityTimeSeriesSource;
+import org.openmetadata.service.workflows.searchIndex.ReindexingUtil;
 
 /**
  * Worker that processes a single partition of entities for search indexing.
@@ -486,42 +487,32 @@ public class PartitionWorker {
     ResultList<?> resultList = readEntitiesKeyset(entityType, keysetCursor, batchSize);
     long t1 = System.currentTimeMillis();
 
-    if (resultList == null || resultList.getData() == null || resultList.getData().isEmpty()) {
-      LOG.debug("{} read={}ms returned empty", entityType, t1 - t0);
-      return new BatchResult(0, 0, 0, null);
-    }
-
-    String nextCursor = resultList.getPaging() != null ? resultList.getPaging().getAfter() : null;
-    int readSuccessCount = listOrEmpty(resultList.getData()).size();
-    int readErrorCount = listOrEmpty(resultList.getErrors()).size();
-    int warningsCount = resultList.getWarningsCount() != null ? resultList.getWarningsCount() : 0;
+    int readSuccessCount = resultList != null ? listOrEmpty(resultList.getData()).size() : 0;
+    int readErrorCount = resultList != null ? listOrEmpty(resultList.getErrors()).size() : 0;
+    int warningsCount =
+        (resultList != null && resultList.getWarningsCount() != null)
+            ? resultList.getWarningsCount()
+            : 0;
+    String nextCursor =
+        (resultList != null && resultList.getPaging() != null)
+            ? resultList.getPaging().getAfter()
+            : null;
 
     if (statsTracker != null) {
       statsTracker.recordReaderBatch(readSuccessCount, readErrorCount, warningsCount);
     }
 
-    if (failureRecorder != null && readErrorCount > 0) {
-      for (EntityError entityError : listOrEmpty(resultList.getErrors())) {
-        Object rawEntity = entityError.getEntity();
-        String entityId = null;
-        if (rawEntity instanceof EntityInterface) {
-          UUID id = ((EntityInterface) rawEntity).getId();
-          if (id != null) {
-            entityId = id.toString();
-          }
-        } else if (rawEntity != null) {
-          entityId = rawEntity.toString();
-        }
-        if (entityId == null) {
-          LOG.warn(
-              "Skipping reader failure record for entityType={}: entityId is null, message={}",
-              entityType,
-              entityError.getMessage());
-          continue;
-        }
-        failureRecorder.recordReaderEntityFailure(
-            entityType, entityId, null, entityError.getMessage());
-      }
+    recordReaderFailures(entityType, resultList, readErrorCount);
+    recordRelationshipWarnings(entityType, resultList);
+
+    if (readSuccessCount == 0) {
+      LOG.debug(
+          "{} read={}ms returned no indexable rows (warnings={}, errors={})",
+          entityType,
+          t1 - t0,
+          warningsCount,
+          readErrorCount);
+      return new BatchResult(0, readErrorCount, warningsCount, nextCursor);
     }
 
     Map<String, Object> contextData = createContextData(entityType, statsTracker);
@@ -548,6 +539,68 @@ public class PartitionWorker {
   }
 
   /**
+   * Persist per-entity reader failures so that downstream tooling (e.g. the failures dashboard)
+   * can show which specific records the reader could not hydrate. Runs whether or not the batch
+   * has any successful rows — losing failure diagnostics for "all-error" batches would defeat
+   * the point of the recorder.
+   */
+  private void recordReaderFailures(
+      String entityType, ResultList<?> resultList, int readErrorCount) {
+    if (failureRecorder == null || readErrorCount == 0 || resultList == null) {
+      return;
+    }
+    for (EntityError entityError : listOrEmpty(resultList.getErrors())) {
+      Object rawEntity = entityError.getEntity();
+      String entityId = null;
+      if (rawEntity instanceof EntityInterface) {
+        UUID id = ((EntityInterface) rawEntity).getId();
+        if (id != null) {
+          entityId = id.toString();
+        }
+      } else if (rawEntity != null) {
+        entityId = rawEntity.toString();
+      }
+      if (entityId == null) {
+        // Time-series readers (EntityTimeSeriesRepository) build EntityError without an id —
+        // they only have access to the JSON row, not the entity reference. Per-entity recording
+        // requires an id, so log at DEBUG (not WARN) to avoid spamming logs for every error in
+        // large time-series batches.
+        LOG.debug(
+            "No entityId on reader failure for entityType={} — skipping per-entity record. message={}",
+            entityType,
+            entityError.getMessage());
+        continue;
+      }
+      failureRecorder.recordReaderEntityFailure(
+          entityType, entityId, null, entityError.getMessage());
+    }
+  }
+
+  /**
+   * Persist stale-relationship warnings (records read but not indexable because their parent is
+   * gone) to the failures table, tagged {@code READER_RELATIONSHIP_WARNING}. These are not
+   * failures and never count against the job's failure total — they are recorded only so an
+   * operator can find and clean up the orphaned rows from the failures dashboard.
+   */
+  private void recordRelationshipWarnings(String entityType, ResultList<?> resultList) {
+    if (failureRecorder == null || resultList == null) {
+      return;
+    }
+    for (EntityError warning : listOrEmpty(resultList.getWarnings())) {
+      Object rawEntity = warning.getEntity();
+      String entityId = null;
+      String entityFqn = null;
+      if (rawEntity instanceof EntityInterface entity) {
+        UUID id = entity.getId();
+        entityId = id != null ? id.toString() : null;
+        entityFqn = entity.getFullyQualifiedName();
+      }
+      failureRecorder.recordRelationshipWarning(
+          entityType, entityId, entityFqn, warning.getMessage());
+    }
+  }
+
+  /**
    * Read entities from the database.
    *
    * @param entityType The entity type
@@ -558,7 +611,12 @@ public class PartitionWorker {
   private ResultList<?> readEntitiesKeyset(String entityType, String keysetCursor, int limit)
       throws SearchIndexException {
 
-    List<String> fields = TIME_SERIES_ENTITIES.contains(entityType) ? List.of() : List.of("*");
+    // Selective fields, not "*". Asking for "*" runs every registered fieldFetcher in
+    // setFieldsInBulk — including expensive ones like fetchAndSetOwns on Team/User where every
+    // owned entity becomes an Entity.getEntityReferenceById round-trip — and the index class then
+    // strips most of those out via getExcludedFields anyway. Mirror what EntityReader does on the
+    // single-server pipeline (PR #27723) so both paths request the same minimal set.
+    List<String> fields = ReindexingUtil.getSearchIndexFields(entityType);
 
     if (!TIME_SERIES_ENTITIES.contains(entityType)) {
       PaginatedEntitiesSource source = new PaginatedEntitiesSource(entityType, limit, fields, 0);

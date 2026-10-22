@@ -18,6 +18,7 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.openmetadata.it.bootstrap.SharedEntities;
 import org.openmetadata.it.factories.DashboardServiceTestFactory;
 import org.openmetadata.it.factories.MessagingServiceTestFactory;
@@ -33,6 +34,7 @@ import org.openmetadata.schema.api.domains.CreateDomain;
 import org.openmetadata.schema.api.domains.CreateDomain.DomainType;
 import org.openmetadata.schema.api.domains.DataProductPortsView;
 import org.openmetadata.schema.api.services.CreateDatabaseService;
+import org.openmetadata.schema.api.teams.CreateUser;
 import org.openmetadata.schema.entity.data.Dashboard;
 import org.openmetadata.schema.entity.data.Table;
 import org.openmetadata.schema.entity.data.Topic;
@@ -41,10 +43,12 @@ import org.openmetadata.schema.entity.domains.Domain;
 import org.openmetadata.schema.entity.services.DashboardService;
 import org.openmetadata.schema.entity.services.DatabaseService;
 import org.openmetadata.schema.entity.services.MessagingService;
+import org.openmetadata.schema.entity.teams.User;
 import org.openmetadata.schema.entity.type.Style;
 import org.openmetadata.schema.services.connections.database.MysqlConnection;
 import org.openmetadata.schema.services.connections.database.common.basicAuth;
 import org.openmetadata.schema.type.ApiStatus;
+import org.openmetadata.schema.type.ChangeEvent;
 import org.openmetadata.schema.type.EntityHistory;
 import org.openmetadata.schema.type.EntityReference;
 import org.openmetadata.schema.type.EntityStatus;
@@ -1142,6 +1146,148 @@ public class DataProductResourceIT extends BaseEntityIT<DataProduct, CreateDataP
         SdkClients.adminClient().dataProducts().get(updated.getId().toString(), "domains");
     assertEquals(1, fetched.getDomains().size());
     assertEquals(domain2.getId(), fetched.getDomains().get(0).getId());
+  }
+
+  @Test
+  void test_changeDataProductDomain_thenDeleteOriginalDomain_preservesDataProduct(
+      TestNamespace ns) {
+    OpenMetadataClient client = SdkClients.adminClient();
+    Domain domain1 = createTestDomain(ns, "domain_delete_original_1");
+    Domain domain2 = createTestDomain(ns, "domain_delete_original_2");
+
+    DataProduct dataProduct =
+        createEntity(
+            new CreateDataProduct()
+                .withName(ns.prefix("dp_delete_original_domain"))
+                .withDescription("Data product moved before original domain deletion")
+                .withDomains(List.of(domain1.getFullyQualifiedName())));
+
+    dataProduct.setDomains(List.of(domain2.getEntityReference()));
+    DataProduct updated = patchEntity(dataProduct.getId().toString(), dataProduct);
+    assertEquals(1, updated.getDomains().size());
+    assertEquals(domain2.getId(), updated.getDomains().getFirst().getId());
+
+    client
+        .domains()
+        .delete(domain1.getId().toString(), Map.of("hardDelete", "true", "recursive", "true"));
+
+    DataProduct fetched = client.dataProducts().get(dataProduct.getId().toString(), "domains");
+    assertFalse(Boolean.TRUE.equals(fetched.getDeleted()));
+    assertEquals(1, fetched.getDomains().size());
+    assertEquals(domain2.getId(), fetched.getDomains().getFirst().getId());
+
+    ListResponse<DataProduct> listed =
+        client
+            .dataProducts()
+            .list(
+                new ListParams()
+                    .setFields("domains")
+                    .withDomain(domain2.getFullyQualifiedName())
+                    .withLimit(100));
+    assertTrue(
+        listed.getData().stream().anyMatch(dp -> dp.getId().equals(dataProduct.getId())),
+        "Moved data product must remain visible under its target domain after original domain deletion");
+  }
+
+  @Test
+  @ResourceLock("MULTI_DOMAIN_RULE")
+  void test_deleteOneDomainForMultiDomainDataProduct_preservesDataProductUntilLastDomain(
+      TestNamespace ns) {
+    OpenMetadataClient client = SdkClients.adminClient();
+    Domain domain1 = createTestDomain(ns, "multi_domain_delete_1");
+    Domain domain2 = createTestDomain(ns, "multi_domain_delete_2");
+
+    DataProduct dataProduct =
+        createEntity(
+            new CreateDataProduct()
+                .withName(ns.prefix("dp_multi_domain_delete"))
+                .withDescription("Data product shared by multiple domains")
+                .withDomains(List.of(domain1.getFullyQualifiedName())));
+    updateDataProductDomainsWithMultiDomainRuleDisabled(client, dataProduct, domain1, domain2);
+
+    DataProduct sharedDataProduct =
+        client.dataProducts().get(dataProduct.getId().toString(), "domains");
+    Double versionBeforeDomainDelete = sharedDataProduct.getVersion();
+    assertEquals(2, sharedDataProduct.getDomains().size());
+    assertTrue(
+        sharedDataProduct.getDomains().stream()
+            .anyMatch(domain -> domain.getId().equals(domain1.getId())));
+    assertTrue(
+        sharedDataProduct.getDomains().stream()
+            .anyMatch(domain -> domain.getId().equals(domain2.getId())));
+
+    long eventsSince = System.currentTimeMillis();
+    client
+        .domains()
+        .delete(domain1.getId().toString(), Map.of("hardDelete", "true", "recursive", "true"));
+
+    DataProduct fetched = client.dataProducts().get(dataProduct.getId().toString(), "domains");
+    assertFalse(Boolean.TRUE.equals(fetched.getDeleted()));
+    assertEquals(1, fetched.getDomains().size());
+    assertEquals(domain2.getId(), fetched.getDomains().getFirst().getId());
+    assertTrue(fetched.getVersion() > versionBeforeDomainDelete);
+    assertDomainDetachChangeEvent(
+        client, dataProduct.getId(), versionBeforeDomainDelete, fetched.getVersion(), eventsSince);
+
+    ListResponse<DataProduct> listed =
+        client
+            .dataProducts()
+            .list(
+                new ListParams()
+                    .setFields("domains")
+                    .withDomain(domain2.getFullyQualifiedName())
+                    .withLimit(100));
+    assertTrue(
+        listed.getData().stream().anyMatch(dp -> dp.getId().equals(dataProduct.getId())),
+        "Data product must remain visible under the surviving domain");
+
+    client
+        .domains()
+        .delete(domain2.getId().toString(), Map.of("hardDelete", "true", "recursive", "true"));
+
+    assertThrows(
+        Exception.class,
+        () -> client.dataProducts().get(dataProduct.getId().toString(), "domains"));
+  }
+
+  private void assertDomainDetachChangeEvent(
+      OpenMetadataClient client,
+      UUID dataProductId,
+      Double previousVersion,
+      Double currentVersion,
+      long eventsSince) {
+    Awaitility.await()
+        .atMost(Duration.ofSeconds(10))
+        .untilAsserted(
+            () -> {
+              ListResponse<ChangeEvent> events =
+                  client.changeEvents().listUpdated("dataProduct", eventsSince);
+              assertTrue(
+                  events.getData().stream()
+                      .anyMatch(
+                          event ->
+                              dataProductId.equals(event.getEntityId())
+                                  && previousVersion.equals(event.getPreviousVersion())
+                                  && currentVersion.equals(event.getCurrentVersion())
+                                  && event.getChangeDescription() != null
+                                  && event.getChangeDescription().getFieldsDeleted() != null
+                                  && event.getChangeDescription().getFieldsDeleted().stream()
+                                      .anyMatch(field -> "domains".equals(field.getName()))),
+                  "Domain detach should emit a data product change event");
+            });
+  }
+
+  private DataProduct updateDataProductDomainsWithMultiDomainRuleDisabled(
+      OpenMetadataClient client, DataProduct dataProduct, Domain... domains) {
+    boolean originalRuleState = EntityRulesUtil.isMultiDomainRuleEnabled(client);
+    EntityRulesUtil.toggleMultiDomainRule(client, false);
+    try {
+      DataProduct update = client.dataProducts().get(dataProduct.getId().toString(), "domains");
+      update.setDomains(List.of(domains).stream().map(Domain::getEntityReference).toList());
+      return client.dataProducts().update(dataProduct.getId().toString(), update);
+    } finally {
+      EntityRulesUtil.toggleMultiDomainRule(client, originalRuleState);
+    }
   }
 
   @Test
@@ -2797,5 +2943,123 @@ public class DataProductResourceIT extends BaseEntityIT<DataProduct, CreateDataP
     // Verify output port is cleaned up
     ResultList<Map<String, Object>> outputPorts = getOutputPorts(dataProduct.getId(), 10, 0);
     assertEquals(0, outputPorts.getPaging().getTotal());
+  }
+
+  @Test
+  void softDeletedExpert_notReturnedInSingleGet(TestNamespace ns) {
+    OpenMetadataClient client = SdkClients.adminClient();
+    Domain domain = getOrCreateDomain(ns);
+
+    String userName = ns.shortPrefix("expert_user");
+    User expert =
+        client
+            .users()
+            .create(
+                new CreateUser()
+                    .withName(userName)
+                    .withEmail(userName + "@test.openmetadata.org")
+                    .withDescription("Expert user for soft-delete test"));
+
+    CreateDataProduct create =
+        new CreateDataProduct()
+            .withName(ns.prefix("dp_softdel_expert"))
+            .withDescription("DataProduct for soft-delete expert test")
+            .withDomains(List.of(domain.getFullyQualifiedName()))
+            .withExperts(List.of(expert.getFullyQualifiedName()));
+    DataProduct dp = createEntity(create);
+
+    client.users().delete(expert.getId().toString());
+
+    DataProduct byId = client.dataProducts().get(dp.getId().toString(), "experts");
+    assertTrue(
+        byId.getExperts() == null || byId.getExperts().isEmpty(),
+        "Soft-deleted expert must not appear in single GET by ID");
+
+    DataProduct byName = client.dataProducts().getByName(dp.getFullyQualifiedName(), "experts");
+    assertTrue(
+        byName.getExperts() == null || byName.getExperts().isEmpty(),
+        "Soft-deleted expert must not appear in single GET by name");
+  }
+
+  @Test
+  void softDeletedExpert_notReturnedInListEndpoint(TestNamespace ns) {
+    OpenMetadataClient client = SdkClients.adminClient();
+    Domain domain = getOrCreateDomain(ns);
+
+    String userName = ns.shortPrefix("expert_list_user");
+    User expert =
+        client
+            .users()
+            .create(
+                new CreateUser()
+                    .withName(userName)
+                    .withEmail(userName + "@test.openmetadata.org")
+                    .withDescription("Expert user for bulk soft-delete test"));
+
+    CreateDataProduct create =
+        new CreateDataProduct()
+            .withName(ns.prefix("dp_softdel_expert_list"))
+            .withDescription("DataProduct for soft-delete expert list test")
+            .withDomains(List.of(domain.getFullyQualifiedName()))
+            .withExperts(List.of(expert.getFullyQualifiedName()));
+    DataProduct dp = createEntity(create);
+
+    client.users().delete(expert.getId().toString());
+
+    ListParams params =
+        new ListParams()
+            .setFields("experts")
+            .withDomain(domain.getFullyQualifiedName())
+            .withLimit(100);
+    ListResponse<DataProduct> list = client.dataProducts().list(params);
+    DataProduct listed =
+        list.getData().stream()
+            .filter(p -> p.getId().equals(dp.getId()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("DataProduct not found in list"));
+    assertTrue(
+        listed.getExperts() == null || listed.getExperts().isEmpty(),
+        "Soft-deleted expert must not appear in list endpoint");
+  }
+
+  @Test
+  void softDeletedOwner_notReturnedInListEndpoint(TestNamespace ns) {
+    OpenMetadataClient client = SdkClients.adminClient();
+    Domain domain = getOrCreateDomain(ns);
+
+    String userName = ns.shortPrefix("owner_list_user");
+    User owner =
+        client
+            .users()
+            .create(
+                new CreateUser()
+                    .withName(userName)
+                    .withEmail(userName + "@test.openmetadata.org")
+                    .withDescription("Owner user for soft-delete list test"));
+
+    CreateDataProduct create =
+        new CreateDataProduct()
+            .withName(ns.prefix("dp_softdel_owner_list"))
+            .withDescription("DataProduct for soft-delete owner list test")
+            .withDomains(List.of(domain.getFullyQualifiedName()))
+            .withOwners(List.of(owner.getEntityReference()));
+    DataProduct dp = createEntity(create);
+
+    client.users().delete(owner.getId().toString());
+
+    ListParams params =
+        new ListParams()
+            .setFields("owners")
+            .withDomain(domain.getFullyQualifiedName())
+            .withLimit(100);
+    ListResponse<DataProduct> list = client.dataProducts().list(params);
+    DataProduct listed =
+        list.getData().stream()
+            .filter(p -> p.getId().equals(dp.getId()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("DataProduct not found in list"));
+    assertTrue(
+        listed.getOwners() == null || listed.getOwners().isEmpty(),
+        "Soft-deleted owner must not appear in list endpoint");
   }
 }

@@ -39,6 +39,7 @@ import {
   getIngestionPipelines,
   triggerIngestionPipelineById,
 } from '../../../../rest/ingestionPipelineAPI';
+import { ruleRecommenderAPI } from '../../../../services/ruleRecommenderAPI';
 import { checkPermission } from '../../../../utils/PermissionsUtils';
 import { getTestSuiteIngestionPath } from '../../../../utils/RouterUtils';
 import { getServiceFromTestSuiteFQN } from '../../../../utils/TestSuiteUtils';
@@ -61,6 +62,9 @@ const TestSuitePipelineTab = ({
   const airflowInformation = useAirflowStatus();
   const { t } = useTranslation();
   const testSuiteFQN = testSuite?.fullyQualifiedName ?? testSuite?.name ?? '';
+  const tableFQN = isLogicalTestSuite
+    ? undefined
+    : testSuiteFQN.replace(/\.testSuite$/, '');
 
   const { permissions } = usePermissionProvider();
   const pipelinePaging = usePaging();
@@ -164,11 +168,16 @@ const TestSuitePipelineTab = ({
 
   const handleTriggerIngestion = useCallback(
     async (id: string, displayName: string) => {
-      try {
-        await triggerIngestionPipelineById(id);
-        showSuccessToast('Pipeline triggered successfully');
+      const [pipelineResult, ntRunResult] = await Promise.allSettled([
+        triggerIngestionPipelineById(id),
+        tableFQN
+          ? ruleRecommenderAPI.startNtRun(tableFQN, id)
+          : Promise.resolve(undefined),
+      ]);
+
+      if (pipelineResult.status === 'fulfilled') {
         setPipelineIdToFetchStatus(id);
-      } catch {
+      } else {
         showErrorToast(
           t('server.ingestion-workflow-operation-error', {
             operation: 'triggering',
@@ -176,8 +185,30 @@ const TestSuitePipelineTab = ({
           })
         );
       }
+
+      if (ntRunResult.status === 'rejected') {
+        showErrorToast(
+          `Pipeline request completed, but NT validation could not be started: ${
+            ntRunResult.reason instanceof Error
+              ? ntRunResult.reason.message
+              : String(ntRunResult.reason)
+          }`
+        );
+      }
+
+      if (
+        pipelineResult.status === 'fulfilled' &&
+        ntRunResult.status === 'fulfilled' &&
+        tableFQN
+      ) {
+        showSuccessToast('Pipeline and NT validation triggered successfully');
+      } else if (pipelineResult.status === 'fulfilled') {
+        showSuccessToast('Pipeline triggered successfully');
+      } else if (ntRunResult.status === 'fulfilled' && tableFQN) {
+        showSuccessToast('NT validation triggered successfully');
+      }
     },
-    [t]
+    [t, tableFQN]
   );
 
   const handleDeployIngestion = useCallback(

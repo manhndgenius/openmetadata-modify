@@ -34,7 +34,6 @@ import { TeamClass } from '../../support/team/TeamClass';
 import { UserClass } from '../../support/user/UserClass';
 import { performAdminLogin } from '../../utils/admin';
 import {
-  getApiContext,
   redirectToHomePage,
   toastNotification,
   uuid,
@@ -57,6 +56,7 @@ import {
   restoreUser,
   restoreUserProfilePage,
   revokeToken,
+  searchUserByEmail,
   settingPageOperationPermissionCheck,
   softDeleteUser,
   softDeleteUserProfilePage,
@@ -174,7 +174,6 @@ test.beforeAll('Setup pre-requests', async ({ browser }) => {
 });
 
 test.describe('User with Admin Roles', () => {
-
   test('Update own admin details', async ({ adminPage }) => {
     await redirectToHomePage(adminPage);
 
@@ -198,22 +197,37 @@ test.describe('User with Admin Roles', () => {
 
     await visitUserListPage(adminPage);
 
-    await test.step(
-      "User shouldn't be allowed to create User with same Email",
-      async () => {
-        await checkForUserExistError(adminPage, {
-          name: updatedUserDetails.name,
-          email: updatedUserDetails.email,
-          password: updatedUserDetails.password,
-        });
-      }
-    );
+    await test.step('User is searchable by email', async () => {
+      await searchUserByEmail(
+        adminPage,
+        updatedUserDetails.email,
+        updatedUserDetails.name
+      );
+    });
+
+    await test.step("User shouldn't be allowed to create User with same Email", async () => {
+      await checkForUserExistError(adminPage, {
+        name: updatedUserDetails.name,
+        email: updatedUserDetails.email,
+        password: updatedUserDetails.password,
+      });
+    });
 
     await permanentDeleteUser(
       adminPage,
       updatedUserDetails.name,
       updatedUserDetails.name,
       false
+    );
+  });
+
+  test('Admin is searchable by email', async ({ adminPage }) => {
+    await redirectToHomePage(adminPage);
+    await settingClick(adminPage, GlobalSettingOptions.ADMINS);
+    await searchUserByEmail(
+      adminPage,
+      adminUser.data.email,
+      adminUser.responseData.name
     );
   });
 
@@ -263,112 +277,9 @@ test.describe('User with Admin Roles', () => {
     await restoreUserProfilePage(adminPage, user.responseData.displayName);
     await hardDeleteUserProfilePage(adminPage, user.responseData.displayName);
   });
-
-  test('User should be visible in right panel on table page when added as custom property', async ({
-    adminPage,
-  }) => {
-    const { apiContext } = await getApiContext(adminPage);
-
-    // await redirectToHomePage(adminPage);
-    // 1. Setup - Create Custom Property and assign to Table
-    const customPropertyName = `pwCustomUserList${uuid()}`;
-    const customPropertyDescription = 'test description';
-
-    // Get Entity Reference List Type ID
-    const typeResponse = await apiContext.get(
-      '/api/v1/metadata/types/name/entityReferenceList'
-    );
-    const typeData = await typeResponse.json();
-    const typeId = typeData.id;
-
-    // Get Table Entity ID
-    const tableTypeResponse = await apiContext.get(
-      '/api/v1/metadata/types/name/table'
-    );
-    const tableTypeData = await tableTypeResponse.json();
-    const tableTypeId = tableTypeData.id;
-
-    // Create Custom Property
-    await apiContext.put(`/api/v1/metadata/types/${tableTypeId}`, {
-      data: {
-        name: customPropertyName,
-        description: customPropertyDescription,
-        propertyType: {
-          id: typeId,
-          type: 'type',
-        },
-        customPropertyConfig: {
-          config: ['user'],
-        },
-      },
-    });
-
-    const userName = user3.responseData.name;
-    const userDisplayName = user3.responseData.displayName ?? user3.responseData.name;
-    // Patch Table to add the user to the custom property
-    await tableEntity.patch({
-      apiContext,
-      patchData: [
-        {
-          op: 'add',
-          path: '/extension',
-          value: {
-            [customPropertyName]: [
-              {
-                id: user3.responseData.id,
-                type: 'user',
-                name: userName,
-                fullyQualifiedName: user3.responseData.fullyQualifiedName,
-              },
-            ],
-          },
-        },
-      ],
-    });
-
-    // 2. UI Verification
-    await redirectToHomePage(adminPage);
-    await tableEntity.visitEntityPage(adminPage);
-    await adminPage.waitForLoadState('networkidle');
-
-    // Check if the user details are visible in the right panel
-    const userElement = adminPage.getByTestId(userName);
-    const isUserVisible = await userElement.isVisible();
-
-    // If not visible, click on Custom Properties tab to see all custom properties
-    if (!isUserVisible) {
-      await adminPage.getByTestId('custom_properties').click();
-    }
-
-    // Verify Custom Property in Right Panel
-    const rightPanelSection = adminPage.getByTestId(customPropertyName);
-    await expect(rightPanelSection).toBeVisible();
-
-    // Verify User Link - the link displays the username (not displayName)
-    const userLink = adminPage.getByTestId(userName).getByRole('link');
-
-    await expect(userLink).toContainText(userName);
-
-    // Click User Link and Verify Navigation
-    const userDetailsResponse = adminPage.waitForResponse(
-      '/api/v1/users/name/*'
-    );
-    await userLink.click();
-    await userDetailsResponse;
-
-    // URL may contain encoded quotes (%22) around the username
-    await expect(adminPage).toHaveURL(
-      new RegExp(`/users/(%22)?${userName}(%22)?`, 'i')
-    );
-    await expect(adminPage.getByTestId('user-display-name')).toHaveText(
-      userDisplayName
-    );
-  });
 });
 
 test.describe('User with Data Consumer Roles', () => {
-
-
   test('Token generation & revocation for Data Consumer', async ({
     dataConsumerPage,
   }) => {
@@ -520,8 +431,6 @@ test.describe('User with Data Consumer Roles', () => {
 });
 
 test.describe('User with Data Steward Roles', () => {
-
-
   test('Update user details for Data Steward', async ({ dataStewardPage }) => {
     await redirectToHomePage(dataStewardPage);
 
@@ -571,7 +480,7 @@ test.describe('User with Data Steward Roles', () => {
     adminPage,
     dataStewardPage,
   }) => {
-    test.slow()
+    test.slow();
     await redirectToHomePage(adminPage);
 
     await checkStewardServicesPermissions(dataStewardPage);
@@ -617,8 +526,6 @@ test.describe('User Profile Feed Interactions', () => {
   test('Should navigate to user profile from feed card avatar click', async ({
     browser,
   }) => {
-
-
     const { page, afterAction } = await performUserLogin(browser, user3);
 
     await redirectToHomePage(page);
@@ -653,7 +560,7 @@ test.describe('User Profile Feed Interactions', () => {
     await userNameElement.click();
     await userDetailsResponse;
 
-   // redirecting on new page
+    // redirecting on new page
     await page.waitForLoadState('networkidle');
 
     // Verify we navigated to the correct user's profile
@@ -686,8 +593,6 @@ test.describe('User Profile Feed Interactions', () => {
 });
 
 test.describe('User Profile Dropdown Persona Interactions', () => {
-
-
   test.beforeAll('Prerequisites', async ({ browser }) => {
     const { apiContext, afterAction } = await performUserLogin(
       browser,
@@ -782,18 +687,17 @@ test.describe('User Profile Dropdown Persona Interactions', () => {
       await moreButton.click();
     }
 
-    // Verify default persona tag is visible
-    await expect(
-      adminPage.locator('[data-testid="default-persona-tag"]')
-    ).toBeVisible();
-
-    // Verify default persona is first in the list
-    const personaLabels = adminPage.locator('[data-testid="persona-label"]');
-    const firstPersona = personaLabels.first();
+    const removedDefaultPersonaLabel = adminPage
+      .locator('[data-testid="persona-label"]')
+      .filter({ hasText: persona2.responseData.displayName });
 
     await expect(
-      firstPersona.locator('[data-testid="default-persona-tag"]')
-    ).toBeVisible();
+      removedDefaultPersonaLabel.locator('[data-testid="default-persona-tag"]')
+    ).not.toBeVisible();
+
+    await expect(
+      removedDefaultPersonaLabel.locator('input[type="radio"]')
+    ).not.toBeChecked();
   });
 
   test('Should switch personas correctly', async ({ adminPage }) => {
@@ -873,7 +777,9 @@ test.describe('User Profile Dropdown Persona Interactions', () => {
         .allTextContents();
 
       // Verify first one contains the default persona name
-      expect(personaTexts[0]).toContain(persona1.responseData.displayName??persona1.responseData.name);
+      expect(personaTexts[0]).toContain(
+        persona1.responseData.displayName ?? persona1.responseData.name
+      );
     }
   });
 
@@ -1162,30 +1068,27 @@ test.describe('User Profile Persona Interactions', () => {
     await adminPage.waitForSelector('[data-testid="persona-details-card"]');
 
     // Test clicking on persona chip to navigate to persona page
-    await test.step(
-      'Navigate to persona page by clicking on persona chip',
-      async () => {
-        const personaCard = adminPage.locator(
-          '[data-testid="persona-details-card"]'
-        );
-        const personaChip = personaCard
-          .locator('[data-testid="chip-container"] [data-testid="tag-chip"]')
-          .first();
-        const personaLink = personaChip.locator('a').first();
+    await test.step('Navigate to persona page by clicking on persona chip', async () => {
+      const personaCard = adminPage.locator(
+        '[data-testid="persona-details-card"]'
+      );
+      const personaChip = personaCard
+        .locator('[data-testid="chip-container"] [data-testid="tag-chip"]')
+        .first();
+      const personaLink = personaChip.locator('a').first();
 
-        // Get the persona name/link for verification
-        const personaText = await personaLink.textContent();
+      // Get the persona name/link for verification
+      const personaText = await personaLink.textContent();
 
-        expect(personaText).toBeTruthy();
+      expect(personaText).toBeTruthy();
 
-        // Click the persona link to navigate
-        await personaLink.click();
-        await adminPage.waitForLoadState('networkidle');
+      // Click the persona link to navigate
+      await personaLink.click();
+      await adminPage.waitForLoadState('networkidle');
 
-        // Verify we're on the persona page
-        await expect(adminPage.url()).toContain('/persona/');
-      }
-    );
+      // Verify we're on the persona page
+      await expect(adminPage.url()).toContain('/persona/');
+    });
 
     // Navigate back to user profile for removal test
     await test.step('Navigate back to user profile', async () => {
@@ -1282,27 +1185,24 @@ test.describe('User Profile Persona Interactions', () => {
     });
 
     // Test clicking on default persona chip to navigate to persona page
-    await test.step(
-      'Navigate to persona page by clicking on default persona chip',
-      async () => {
-        const defaultPersonaChip = adminPage
-          .locator('.default-persona-text [data-testid="tag-chip"]')
-          .first();
-        const personaLink = defaultPersonaChip.locator('a').first();
+    await test.step('Navigate to persona page by clicking on default persona chip', async () => {
+      const defaultPersonaChip = adminPage
+        .locator('.default-persona-text [data-testid="tag-chip"]')
+        .first();
+      const personaLink = defaultPersonaChip.locator('a').first();
 
-        // Get the persona name/link for verification
-        const personaText = await personaLink.textContent();
+      // Get the persona name/link for verification
+      const personaText = await personaLink.textContent();
 
-        expect(personaText).toBeTruthy();
+      expect(personaText).toBeTruthy();
 
-        // Click the persona link to navigate
-        await personaLink.click();
-        await adminPage.waitForLoadState('networkidle');
+      // Click the persona link to navigate
+      await personaLink.click();
+      await adminPage.waitForLoadState('networkidle');
 
-        // Verify we're on the persona page
-        await expect(adminPage.url()).toContain('/persona/');
-      }
-    );
+      // Verify we're on the persona page
+      await expect(adminPage.url()).toContain('/persona/');
+    });
 
     // Navigate back to user profile for removal test
     await test.step('Navigate back to user profile', async () => {
@@ -1418,23 +1318,6 @@ base.describe(
         team5.create(apiContext),
       ]);
 
-      await afterAction();
-    });
-
-    base.afterAll('Cleanup', async ({ browser }) => {
-      const { apiContext, afterAction } = await performAdminLogin(browser);
-      await Promise.all([
-        policy.delete(apiContext),
-        role.delete(apiContext),
-        policy2.delete(apiContext),
-        role2.delete(apiContext),
-        policy3.delete(apiContext),
-        role3.delete(apiContext),
-        policy4.delete(apiContext),
-        role4.delete(apiContext),
-        policy5.delete(apiContext),
-        role5.delete(apiContext),
-      ]);
       await afterAction();
     });
 

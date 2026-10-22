@@ -208,6 +208,10 @@
           },
           "ordinalPosition": {
             "type": "integer"
+          },
+          "children": {
+            "type": "object",
+            "enabled": false
           }
         }
       },

@@ -33,6 +33,7 @@ import org.openmetadata.schema.system.StepStats;
 import org.openmetadata.schema.utils.JsonUtils;
 import org.openmetadata.service.apps.bundles.searchIndex.ReindexingJobContext;
 import org.openmetadata.service.apps.bundles.searchIndex.ReindexingProgressListener;
+import org.openmetadata.service.apps.scheduler.OmAppJobListener;
 import org.openmetadata.service.jdbi3.CollectionDAO;
 import org.openmetadata.service.socket.WebSocketManager;
 
@@ -356,6 +357,7 @@ public class DistributedJobStatsAggregator {
         stepStats.setTotalRecords(safeToInt(es.getTotalRecords()));
         stepStats.setSuccessRecords(safeToInt(es.getSuccessRecords()));
         stepStats.setFailedRecords(safeToInt(es.getFailedRecords()));
+        stepStats.setWarningRecords(safeToInt(es.getWarningRecords()));
 
         CollectionDAO.SearchIndexServerStatsDAO.EntityStats vectorEntityStats =
             vectorByEntity.get(entry.getKey());
@@ -455,6 +457,7 @@ public class DistributedJobStatsAggregator {
     appRecord.setStartTime(appStartTime != null ? appStartTime : job.getStartedAt());
     appRecord.setEndTime(job.getCompletedAt());
     appRecord.setTimestamp(job.getUpdatedAt());
+    OmAppJobListener.fillTerminalTimings(appRecord);
 
     // Add stats as success context
     SuccessContext successContext = new SuccessContext();

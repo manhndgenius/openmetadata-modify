@@ -25,15 +25,26 @@ import {
   Typography,
 } from 'antd';
 import { useEffect } from 'react';
+import { DataType } from '../../../generated/entity/data/table';
 import {
   NtRuleConfig,
   NtRuleConfigField,
   NtRuleConfigRule,
 } from '../../../services/ruleRecommenderAPI';
 
+const isHiddenScopeField = (fieldName: string) => {
+  const normalizedName = fieldName.toLowerCase();
+
+  return (
+    normalizedName.startsWith('excluded') ||
+    normalizedName.startsWith('included')
+  );
+};
+
 interface NTRuleConfigModalProps {
   rule: NtRuleConfigRule;
   initialConfig: NtRuleConfig;
+  inline?: boolean;
   isSaving?: boolean;
   onCancel: () => void;
   onSave: (config: NtRuleConfig) => void;
@@ -63,12 +74,16 @@ const regexListValidator = (_: unknown, value?: string[]) =>
 const NTRuleConfigModal = ({
   rule,
   initialConfig,
+  inline = false,
   isSaving = false,
   onCancel,
   onSave,
   onReset,
 }: NTRuleConfigModalProps) => {
   const [form] = Form.useForm<NtRuleConfig>();
+  const visibleFields = rule.fields.filter(
+    (field) => !isHiddenScopeField(field.name)
+  );
 
   useEffect(() => {
     form.setFieldsValue(initialConfig);
@@ -119,7 +134,19 @@ const NTRuleConfigModal = ({
                     ]}
                     style={{ marginBottom: 8 }}
                   >
-                    {column.control === 'TAG_LIST' ? (
+                    {column.control === 'DATA_TYPE_MULTI_SELECT' ? (
+                      <Select
+                        showSearch
+                        data-testid={`${field.name}-${column.name}-${row.name}`}
+                        mode="multiple"
+                        options={Object.values(DataType).map((dataType) => ({
+                          label: dataType,
+                          value: dataType,
+                        }))}
+                        placeholder="Select OpenMetadata data types"
+                        style={{ minWidth: 260 }}
+                      />
+                    ) : column.control === 'TAG_LIST' ? (
                       <Select
                         mode="tags"
                         placeholder={column.name}
@@ -246,18 +273,14 @@ const NTRuleConfigModal = ({
 
       return;
     }
-    onSave(values);
+    const visibleValues = Object.fromEntries(
+      Object.entries(values).filter(([name]) => !isHiddenScopeField(name))
+    );
+    onSave(visibleValues);
   };
 
-  return (
-    <Modal
-      destroyOnClose
-      visible
-      footer={null}
-      title={`Configure ${rule.display_name}`}
-      width={720}
-      onCancel={onCancel}
-    >
+  const formContent = (
+    <>
       <Alert
         showIcon
         message="Configuration is stored in PostgreSQL and shared by all NT runs."
@@ -266,7 +289,7 @@ const NTRuleConfigModal = ({
       <Typography.Paragraph className="m-t-sm" type="secondary">
         Test Definition: {rule.name}
       </Typography.Paragraph>
-      {rule.fields.length === 0 ? (
+      {visibleFields.length === 0 ? (
         <Alert
           message="This rule has no configurable parameters."
           type="warning"
@@ -278,7 +301,7 @@ const NTRuleConfigModal = ({
         layout="vertical"
         onFinish={handleFinish}
       >
-        {rule.fields.map(renderField)}
+        {visibleFields.map(renderField)}
         <Space className="w-full justify-end">
           <Button
             data-testid="reset-nt-rule-config"
@@ -287,7 +310,11 @@ const NTRuleConfigModal = ({
           >
             Reset defaults
           </Button>
-          <Button disabled={isSaving} onClick={onCancel}>Cancel</Button>
+          {!inline && (
+            <Button disabled={isSaving} onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
           <Button
             data-testid="save-nt-rule-config"
             htmlType="submit"
@@ -298,6 +325,23 @@ const NTRuleConfigModal = ({
           </Button>
         </Space>
       </Form>
+    </>
+  );
+
+  if (inline) {
+    return <div className="nt-rule-config-inline">{formContent}</div>;
+  }
+
+  return (
+    <Modal
+      destroyOnClose
+      visible
+      footer={null}
+      title={`Configure ${rule.display_name}`}
+      width={720}
+      onCancel={onCancel}
+    >
+      {formContent}
     </Modal>
   );
 };

@@ -41,12 +41,12 @@ describe('useNtRuleConfigModal', () => {
   });
 
   it('tracks loading for only the rule being opened', async () => {
-    let resolveConfig: (value: Awaited<
-      ReturnType<typeof ruleRecommenderAPI.getNtRuleConfig>
-    >) => void = () => undefined;
-    const configPromise = new Promise<Awaited<
-      ReturnType<typeof ruleRecommenderAPI.getNtRuleConfig>
-    >>((resolve) => {
+    let resolveConfig: (
+      value: Awaited<ReturnType<typeof ruleRecommenderAPI.getNtRuleConfig>>
+    ) => void = () => undefined;
+    const configPromise = new Promise<
+      Awaited<ReturnType<typeof ruleRecommenderAPI.getNtRuleConfig>>
+    >((resolve) => {
       resolveConfig = resolve;
     });
 
@@ -118,9 +118,7 @@ describe('useNtRuleConfigModal', () => {
     expect(getSchema).toHaveBeenCalledTimes(1);
     expect(getConfig).toHaveBeenCalledTimes(2);
 
-    await act(async () =>
-      result.current.save({ nameRegex: '^edited$' })
-    );
+    await act(async () => result.current.save({ nameRegex: '^edited$' }));
 
     expect(updateConfig).toHaveBeenCalledWith(
       rule.name,
@@ -162,5 +160,37 @@ describe('useNtRuleConfigModal', () => {
     expect(deleteConfig).toHaveBeenCalledWith(rule.name, 4);
     expect(result.current.config).toEqual(rule.defaults);
     expect(result.current.isOpen).toBe(true);
+  });
+
+  it('keeps inline configuration selected after saving', async () => {
+    jest
+      .spyOn(ruleRecommenderAPI, 'getNtRuleConfigSchema')
+      .mockResolvedValue({ rules: [rule], version: 1 });
+    jest.spyOn(ruleRecommenderAPI, 'getNtRuleConfig').mockResolvedValue({
+      rule_name: rule.name,
+      config: { nameRegex: '^saved$' },
+      override: { nameRegex: '^saved$' },
+      enabled: true,
+      version: 4,
+      persisted: true,
+    });
+    jest.spyOn(ruleRecommenderAPI, 'updateNtRuleConfig').mockResolvedValue({
+      rule_name: rule.name,
+      config: { nameRegex: '^inline$' },
+      override: { nameRegex: '^inline$' },
+      enabled: true,
+      version: 5,
+      persisted: true,
+    });
+    const { result } = renderHook(() =>
+      useNtRuleConfigModal({ closeAfterSave: false })
+    );
+
+    await act(async () => result.current.open(rule.name));
+    await act(async () => result.current.save({ nameRegex: '^inline$' }));
+
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.selectedRule?.name).toBe(rule.name);
+    expect(result.current.config).toEqual({ nameRegex: '^inline$' });
   });
 });

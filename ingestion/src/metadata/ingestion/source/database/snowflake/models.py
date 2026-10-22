@@ -13,10 +13,10 @@ Snowflake models
 """
 import urllib
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional  # noqa: UP035
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator
-from requests.utils import quote
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from requests.utils import quote  # pyright: ignore[reportPrivateImportUsage]
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -157,7 +157,7 @@ class SnowflakeQueryLogEntry(BaseModel):
             )
         )
         return TypeAdapter(List[SnowflakeQueryLogEntry]).validate_python(
-            [ExtendedDict(r).lower_case_keys() for r in rows]
+            [ExtendedDict(r._asdict()).lower_case_keys() for r in rows]
         )
 
 
@@ -167,6 +167,35 @@ class SnowflakeQueryResult(QueryResult):
     rows_inserted: Optional[int] = None
     rows_updated: Optional[int] = None
     rows_deleted: Optional[int] = None
+
+
+class AccessHistoryRow(BaseModel):
+    """One row from SNOWFLAKE_ACCESS_HISTORY_LINEAGE — a directed table edge
+    with pre-aggregated column pairs (VARIANT) and the representative query's
+    text, type, duration, start time and executing user (pinned to the latest
+    query on the edge)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    downstream_table: Optional[str] = None  # noqa: UP045
+    upstream_table: Optional[str] = None  # noqa: UP045
+    column_pairs: Optional[Any] = None  # noqa: UP045
+    query_text: Optional[str] = None  # noqa: UP045
+    query_type: Optional[str] = None  # noqa: UP045
+    query_duration: Optional[float] = None  # noqa: UP045
+    query_start_time: Optional[datetime] = None  # noqa: UP045
+    user_name: Optional[str] = None  # noqa: UP045
+
+
+class CopyHistoryRow(BaseModel):
+    """One row from SNOWFLAKE_COPY_HISTORY_LINEAGE — a stage→table load event."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    downstream_database: Optional[str] = None  # noqa: UP045
+    downstream_schema: Optional[str] = None  # noqa: UP045
+    downstream_table: Optional[str] = None  # noqa: UP045
+    stage_location: Optional[str] = None  # noqa: UP045
 
 
 class SnowflakeDynamicTableRefreshEntry(BaseModel):

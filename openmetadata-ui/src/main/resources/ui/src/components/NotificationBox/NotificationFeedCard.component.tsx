@@ -12,9 +12,10 @@
  */
 
 import { List, Space, Typography } from 'antd';
-import { FC, useMemo } from 'react';
+import { startCase } from 'lodash';
+import { FC, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { EntityType } from '../../enums/entity.enum';
 import { TaskType, ThreadType } from '../../generated/entity/feed/thread';
 import {
@@ -39,24 +40,39 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
   task,
   isConversationFeed = false,
 }) => {
+  const navigate = useNavigate();
   const { t } = useTranslation();
   const { task: taskDetails } = task ?? {};
 
+  const taskLink = useMemo(() => {
+    return task ? getTaskDetailPath(task) : '';
+  }, [task]);
+
+  const handleTaskLinkClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      navigate(taskLink, { state: { tasksRefreshKey: Date.now() } });
+    },
+    [navigate, taskLink]
+  );
+
   const taskContent = useMemo(() => {
-    if (
-      entityType === 'glossaryTerm' &&
-      task.task?.type === TaskType.RequestApproval
-    ) {
+    if (task.task?.type === TaskType.RequestApproval) {
       return (
         <>
-          <span className="p-x-xss">{task.message}</span>
+          <span className="p-x-xss">
+            {task.message?.trimStart().startsWith('{')
+              ? t('message.request-approval-notification')
+              : task.message}
+          </span>{' '}
           <Link
             className='className="p-r-xss"'
             to={getEntityLinkFromType(
               task?.entityRef?.fullyQualifiedName ?? '',
               task?.entityRef?.type as EntityType,
               task?.entityRef as SourceType
-            )}>
+            )}
+          >
             <span className="m-r-xss">{task?.entityRef?.displayName}</span>
           </Link>
           <span>{t('label.of-lowercase')}</span>
@@ -65,7 +81,8 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
               Fqn.split(task?.entityRef?.fullyQualifiedName ?? '')[0],
               task?.entityRef?.type as EntityType,
               task?.entityRef as SourceType
-            )}>
+            )}
+          >
             <span className="m-l-xss">
               {Fqn.split(task?.entityRef?.fullyQualifiedName ?? '')[0]}
             </span>
@@ -79,18 +96,26 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
         <span className="p-x-xss">
           {t('message.assigned-you-a-new-task-lowercase')}
         </span>
-        <Link to={getTaskDetailPath(task)}>
-          {`#${taskDetails?.id}`} {taskDetails?.type}
+        <Link
+          to={taskLink}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleTaskLinkClick(e);
+          }}
+        >
+          {`#${taskDetails?.id ?? ''} ${startCase(taskDetails?.type ?? '')}`}
         </Link>
       </>
     );
-  }, [entityType, task, taskDetails]);
+  }, [handleTaskLinkClick, t, taskDetails, taskLink]);
 
   const entityName = useMemo(() => {
-    return task?.entityRef
-      ? getEntityName(task?.entityRef)
+    const entityRef = task?.entityRef as SourceType | undefined;
+
+    return entityRef
+      ? getEntityName(entityRef as SourceType)
       : entityDisplayName(entityType, entityFQN);
-  }, [task, entityType, entityFQN]);
+  }, [entityFQN, entityType, task]);
 
   return (
     <Link
@@ -98,8 +123,10 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
       to={
         isConversationFeed
           ? prepareFeedLink(entityType, entityFQN, ActivityFeedTabs.ALL)
-          : getTaskDetailPath(task)
-      }>
+          : taskLink
+      }
+      onClick={!isConversationFeed ? handleTaskLinkClick : undefined}
+    >
       <List.Item.Meta
         avatar={<ProfilePicture name={createdBy} width="32" />}
         className="m-0"
@@ -107,10 +134,12 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
           <Space
             data-testid={`notification-item-${entityName}`}
             direction="vertical"
-            size={0}>
+            size={0}
+          >
             <Typography.Paragraph
               className="m-0"
-              style={{ color: '#37352F', marginBottom: 0 }}>
+              style={{ color: '#37352F', marginBottom: 0 }}
+            >
               <>{createdBy}</>
               {feedType === ThreadType.Conversation ? (
                 <>
@@ -123,7 +152,8 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
                       entityType,
                       entityFQN,
                       ActivityFeedTabs.ALL
-                    )}>
+                    )}
+                  >
                     {entityName}
                   </Link>
                 </>
@@ -133,7 +163,8 @@ const NotificationFeedCard: FC<NotificationFeedProp> = ({
             </Typography.Paragraph>
             <Typography.Text
               style={{ color: '#6B7280', marginTop: '8px', fontSize: '12px' }}
-              title={formatDateTime(timestamp)}>
+              title={formatDateTime(timestamp)}
+            >
               {getRelativeTime(timestamp)}
             </Typography.Text>
           </Space>

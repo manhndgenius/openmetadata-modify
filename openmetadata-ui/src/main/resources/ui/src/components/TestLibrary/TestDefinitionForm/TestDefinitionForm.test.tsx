@@ -352,7 +352,7 @@ describe('TestDefinitionForm Component', () => {
     };
 
     // testPlatforms defaults to [OpenMetadata] so it never fires an error on empty submit.
-    // name + entityType are the two required fields without defaults.
+    // name + entityType are the required fields without defaults.
     it('should show exactly 2 validation errors when create form is submitted empty', async () => {
       render(
         <TestDefinitionForm onCancel={mockOnCancel} onSuccess={mockOnSuccess} />
@@ -379,14 +379,18 @@ describe('TestDefinitionForm Component', () => {
         await submitEmptyForm();
 
         await waitFor(() => {
-          const nameFormItem = screen
-            .getByLabelText('label.name')
-            .closest('.ant-form-item');
-
-          expect(nameFormItem).toHaveTextContent(
-            'message.field-text-is-required'
-          );
+          expect(
+            screen.getAllByText('message.field-text-is-required').length
+          ).toBeGreaterThan(0);
         });
+
+        const nameFormItem = screen
+          .getByLabelText('label.name')
+          .closest('.ant-form-item');
+
+        expect(nameFormItem).toHaveTextContent(
+          'message.field-text-is-required'
+        );
       });
 
       it('entityType field is required', async () => {
@@ -400,14 +404,18 @@ describe('TestDefinitionForm Component', () => {
         await submitEmptyForm();
 
         await waitFor(() => {
-          const entityTypeFormItem = screen
-            .getByLabelText('label.entity-type')
-            .closest('.ant-form-item');
-
-          expect(entityTypeFormItem).toHaveTextContent(
-            'message.field-text-is-required'
-          );
+          expect(
+            screen.getAllByText('message.field-text-is-required').length
+          ).toBeGreaterThan(0);
         });
+
+        const entityTypeFormItem = screen
+          .getByLabelText('label.entity-type')
+          .closest('.ant-form-item');
+
+        expect(entityTypeFormItem).toHaveTextContent(
+          'message.field-text-is-required'
+        );
       });
 
       it('testPlatforms field is required', () => {
@@ -428,6 +436,31 @@ describe('TestDefinitionForm Component', () => {
         expect(
           testPlatformsFormItem?.querySelector('.ant-form-item-required')
         ).toBeInTheDocument();
+      });
+
+      it('supportedDataTypes field is optional for OpenMetadata tests', async () => {
+        render(
+          <TestDefinitionForm
+            onCancel={mockOnCancel}
+            onSuccess={mockOnSuccess}
+          />
+        );
+
+        await submitEmptyForm();
+
+        await waitFor(() => {
+          expect(
+            screen.getAllByText('message.field-text-is-required').length
+          ).toBeGreaterThan(0);
+        });
+
+        const supportedDataTypesFormItem = screen
+          .getByLabelText('label.supported-data-type-plural')
+          .closest('.ant-form-item');
+
+        expect(supportedDataTypesFormItem).not.toHaveTextContent(
+          'message.field-text-is-required'
+        );
       });
 
       it('parameter name field is required', async () => {
@@ -558,9 +591,14 @@ describe('TestDefinitionForm Component', () => {
         await assertNoRequiredError(formItem);
       });
 
-      it('supportedDataTypes field is optional', async () => {
+      it('supportedDataTypes field is optional for non-OpenMetadata tests', async () => {
         render(
           <TestDefinitionForm
+            initialValues={{
+              ...mockExternalTestDefinition,
+              testPlatforms: [TestPlatform.Dbt],
+              supportedDataTypes: [],
+            }}
             onCancel={mockOnCancel}
             onSuccess={mockOnSuccess}
           />

@@ -19,6 +19,7 @@ from datetime import datetime
 from statistics import mean
 from typing import Any, Dict, List, Optional, TypeVar, Union
 
+from metadata.__version__ import get_client_version
 from metadata.config.common import WorkflowExecutionError
 from metadata.generated.schema.api.services.ingestionPipelines.createIngestionPipeline import (
     CreateIngestionPipelineRequest,
@@ -111,7 +112,8 @@ class BaseWorkflow(ABC, WorkflowStatusMixin):
 
         # We create the ometa client at the workflow level and pass it to the steps
         self.metadata = create_ometa_client(
-            self.workflow_config.openMetadataServerConfig
+            self.workflow_config.openMetadataServerConfig,
+            user_agent=self._build_user_agent(),
         )
 
         # Setup streamable logging if configured
@@ -128,10 +130,25 @@ class BaseWorkflow(ABC, WorkflowStatusMixin):
                 enable_streaming=True,
             )
 
+        # Emit after the streamable handler is installed so the line is captured.
+        self.metadata.log_server_version()
+
         self._log_workflow_execution_info()
         self.set_ingestion_pipeline_status(state=PipelineState.running)
 
         self.post_init()
+
+    def _build_user_agent(self) -> Optional[str]:  # noqa: UP045
+        """
+        HTTP User-Agent identifying this workflow's requests to the OpenMetadata server.
+        Subclasses override this to provide more specific identifiers. Best-effort: the
+        version is dropped if it cannot be resolved, but a stable identifier is kept.
+        """
+        try:
+            return f"openmetadata-ingestion (v{get_client_version()})"
+        except Exception as exc:
+            logger.debug(f"Could not resolve the ingestion client version: {exc}")
+            return "openmetadata-ingestion"
 
     @property
     def ingestion_pipeline(self) -> Optional[IngestionPipeline]:
@@ -148,9 +165,6 @@ class BaseWorkflow(ABC, WorkflowStatusMixin):
         # Stop the timer first. This runs in a separate thread and if not properly closed
         # it can hung the workflow
         self.timer.stop()
-
-        # Cleanup streamable logging if it was configured
-        cleanup_streamable_logging()
 
         self.metadata.close()
 
@@ -268,9 +282,11 @@ class BaseWorkflow(ABC, WorkflowStatusMixin):
             ingestion_status = self.build_ingestion_status()
             self.set_ingestion_pipeline_status(pipeline_state, ingestion_status)
             try:
+                self.stop()
                 self.print_status()
             finally:
-                self.stop()
+                # Must run after every other emitter so the tail is captured.
+                cleanup_streamable_logging()
 
     @property
     def run_id(self) -> str:

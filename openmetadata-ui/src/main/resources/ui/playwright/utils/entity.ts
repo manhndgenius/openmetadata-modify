@@ -29,6 +29,7 @@ import { TagClass } from '../support/tag/TagClass';
 import {
   clickOutside,
   descriptionBox,
+  getEntityTypeMapping,
   readElementInListWithScroll,
   redirectToHomePage,
   toastNotification,
@@ -82,11 +83,17 @@ export const visitEntityPage = async (data: {
   await page.getByTestId('searchBox').fill(searchTerm);
   await waitForSearchResponse;
 
-  await page.getByTestId(dataTestId).getByTestId('data-name').click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForSelector('[data-testid="loader"]', {
-    state: 'detached',
+  // Adding a failsafe for the operation below to avoid a tooltip overlap issue.
+  // A tooltip over the option can cause Playwright click failures
+  // move the mouse away from the option first to get rid of the tooltip.
+  await page.locator('body').hover({
+    position: {
+      x: 0,
+      y: 0,
+    },
   });
+  await page.getByTestId(dataTestId).getByTestId('data-name').click();
+  await waitForAllLoadersToDisappear(page);
   await page.getByTestId('searchBox').clear();
 };
 
@@ -898,6 +905,12 @@ export const removeTag = async (page: Page, tags: string[]) => {
     await page.getByTestId('saveAssociatedTag').click();
     await patchRequest;
 
+    await page
+      .getByTestId('saveAssociatedTag')
+      .locator('[data-icon="loading"]')
+      .waitFor({ state: 'detached' });
+    await expect(page.getByTestId('saveAssociatedTag')).not.toBeVisible();
+
     await expect(
       page
         .getByTestId('KnowledgePanel.Tags')
@@ -954,6 +967,12 @@ export const removeTagsFromChildren = async ({
 
     await patchRequest;
 
+    await page
+      .getByTestId('saveAssociatedTag')
+      .locator('[data-icon="loading"]')
+      .waitFor({ state: 'detached' });
+    await expect(page.getByTestId('saveAssociatedTag')).not.toBeVisible();
+
     await expect(
       page
         .locator(`[${rowSelector}="${rowId}"]`)
@@ -1007,9 +1026,11 @@ export const assignGlossaryTerm = async (
     .click();
 
   await patchRequest;
-  await expect(
-    page.getByTestId('custom-drop-down-menu').getByTestId('saveAssociatedTag')
-  ).not.toBeVisible();
+  await page
+    .getByTestId('saveAssociatedTag')
+    .locator('[data-icon="loading"]')
+    .waitFor({ state: 'detached' });
+  await expect(page.getByTestId('saveAssociatedTag')).not.toBeVisible();
 
   await expect(
     page
@@ -1238,6 +1259,12 @@ export const removeGlossaryTerm = async (
       .click();
     await patchRequest;
 
+    await page
+      .getByTestId('saveAssociatedTag')
+      .locator('[data-icon="loading"]')
+      .waitFor({ state: 'detached' });
+    await expect(page.getByTestId('saveAssociatedTag')).not.toBeVisible();
+
     await expect(
       page
         .getByTestId('KnowledgePanel.GlossaryTerms')
@@ -1296,7 +1323,13 @@ export const removeGlossaryTermFromChildren = async ({
 
     await patchRequest;
 
-    expect(
+    await page
+      .getByTestId('saveAssociatedTag')
+      .locator('[data-icon="loading"]')
+      .waitFor({ state: 'detached' });
+    await expect(page.getByTestId('saveAssociatedTag')).not.toBeVisible();
+
+    await expect(
       page
         .locator(`[${rowSelector}="${rowId}"]`)
         .getByTestId('glossary-container')
@@ -2039,28 +2072,32 @@ export const softDeleteEntity = async (
   await page.waitForLoadState('networkidle');
   await page.waitForSelector('[data-testid="loader"]', { state: 'detached' });
   // Retry mechanism for checking deleted badge
-  let deletedBadge = page.locator('[data-testid="deleted-badge"]');
-  let attempts = 0;
-  const maxAttempts = 5;
+  await expect
+    .poll(
+      async () => {
+        const isVisibleBeforeReload = await page
+          .locator('[data-testid="deleted-badge"]')
+          .isVisible();
+        if (isVisibleBeforeReload) {
+          return true;
+        }
 
-  while (attempts < maxAttempts) {
-    const isVisible = await deletedBadge.isVisible();
-    if (isVisible) {
-      break;
-    }
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await waitForAllLoadersToDisappear(page);
 
-    attempts++;
-    if (attempts < maxAttempts) {
-      await page.reload();
-      await page.waitForLoadState('networkidle');
-      await page.waitForSelector('[data-testid="loader"]', {
-        state: 'detached',
-      });
-      deletedBadge = page.locator('[data-testid="deleted-badge"]');
-    }
-  }
+        return await page.locator('[data-testid="deleted-badge"]').isVisible();
+      },
+      {
+        message: 'Waiting for deleted badge to be visible after soft delete',
+        timeout: 120000,
+        intervals: [5000, 10000, 15000],
+      }
+    )
+    .toBeTruthy();
 
-  await expect(deletedBadge).toHaveText('Deleted');
+  await expect(page.locator('[data-testid="deleted-badge"]')).toHaveText(
+    'Deleted'
+  );
 
   await deletedEntityCommonChecks({
     page,
@@ -2239,9 +2276,26 @@ export const checkExploreSearchFilter = async (
   filterLabel: string,
   filterKey: string,
   filterValue: string,
-  entity?: EntityClass
+  entity?: EntityClass,
+  searchEntityType = false
 ) => {
   await sidebarClick(page, SidebarItem.EXPLORE);
+  if (entity?.type && searchEntityType) {
+    const entityTypeId = (getEntityTypeMapping(entity.type) ?? entity.type)
+      .toLocaleLowerCase()
+      .replaceAll(' ', '');
+    const entitySearchResponse = page.waitForResponse(
+      (req) =>
+        req.url().includes('/api/v1/search/query') &&
+        req.url().includes(`index=dataAsset`)
+    );
+
+    await page.getByTestId(`search-dropdown-Data Assets`).click();
+    await page.fill('[data-testid="search-input"]', entityTypeId);
+    await page.getByTestId(entityTypeId).click();
+    await entitySearchResponse;
+    await page.getByTestId('update-btn').click();
+  }
   await page.getByTestId(`search-dropdown-${filterLabel}`).click();
   await searchAndClickOnOption(
     page,

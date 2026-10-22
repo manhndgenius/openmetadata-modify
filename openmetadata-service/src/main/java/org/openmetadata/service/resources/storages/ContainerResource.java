@@ -37,6 +37,7 @@ import org.openmetadata.schema.api.data.RestoreEntity;
 import org.openmetadata.schema.entity.data.Container;
 import org.openmetadata.schema.type.ChangeEvent;
 import org.openmetadata.schema.type.EntityHistory;
+import org.openmetadata.schema.type.EntityReference;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.schema.type.MetadataOperation;
 import org.openmetadata.schema.utils.ResultList;
@@ -47,6 +48,8 @@ import org.openmetadata.service.limits.Limits;
 import org.openmetadata.service.resources.Collection;
 import org.openmetadata.service.resources.EntityResource;
 import org.openmetadata.service.security.Authorizer;
+import org.openmetadata.service.security.policyevaluator.OperationContext;
+import org.openmetadata.service.security.policyevaluator.ResourceContext;
 
 @Path("/v1/containers")
 @Tag(
@@ -62,7 +65,7 @@ public class ContainerResource extends EntityResource<Container, ContainerReposi
   private final ContainerMapper mapper = new ContainerMapper();
   public static final String COLLECTION_PATH = "/v1/containers/";
   static final String FIELDS =
-      "parent,children,dataModel,owners,tags,followers,extension,domains,sourceHash";
+      "parent,dataModel,owners,tags,followers,extension,domains,sourceHash";
 
   @Override
   public Container addHref(UriInfo uriInfo, Container container) {
@@ -78,7 +81,7 @@ public class ContainerResource extends EntityResource<Container, ContainerReposi
 
   @Override
   protected List<MetadataOperation> getEntitySpecificOperations() {
-    addViewOperation("parent,children,dataModel", MetadataOperation.VIEW_BASIC);
+    addViewOperation("parent,dataModel", MetadataOperation.VIEW_BASIC);
     return null;
   }
 
@@ -663,6 +666,38 @@ public class ContainerResource extends EntityResource<Container, ContainerReposi
           @QueryParam("offset")
           @Min(value = 0, message = "must be greater than or equal to 0")
           Integer offset) {
+    OperationContext operationContext =
+        new OperationContext(entityType, MetadataOperation.VIEW_BASIC);
+    ResourceContext<Container> resourceContext = getResourceContextByName(fqn);
+    authorizer.authorize(securityContext, operationContext, resourceContext);
     return repository.listChildren(fqn, limit, offset);
+  }
+
+  @GET
+  @Path("/name/{fqn}/ancestors")
+  @Operation(
+      operationId = "listContainerAncestors",
+      summary = "List ancestor containers (parent chain)",
+      description =
+          "Return the ordered chain of ancestor containers from root (immediate child of the storage service) down to the immediate parent of the given container. Resolved via a single batched fetch — useful for rendering breadcrumbs without N sequential parent lookups.",
+      responses = {
+        @ApiResponse(
+            responseCode = "200",
+            description = "Ordered list of ancestor container references",
+            content =
+                @Content(
+                    mediaType = "application/json",
+                    schema = @Schema(type = "array", implementation = EntityReference.class)))
+      })
+  public List<EntityReference> listAncestors(
+      @Context UriInfo uriInfo,
+      @Context SecurityContext securityContext,
+      @Parameter(description = "Fully qualified name of the container") @PathParam("fqn")
+          String fqn) {
+    OperationContext operationContext =
+        new OperationContext(entityType, MetadataOperation.VIEW_BASIC);
+    ResourceContext<Container> resourceContext = getResourceContextByName(fqn);
+    authorizer.authorize(securityContext, operationContext, resourceContext);
+    return repository.getAncestors(fqn);
   }
 }

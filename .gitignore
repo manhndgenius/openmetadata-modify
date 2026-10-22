@@ -159,7 +159,7 @@ ingestion/.nox/
 _bmad/
 
 # Claude Flow generated files
-.claude/settings.local.json
+.claude/*
 .mcp.json
 claude-flow.config.json
 .swarm/
@@ -200,10 +200,15 @@ ingestion/.claude/agents
 
 test-results/
 
+# Locally exported deployment images
+/openmetadata-dq-*.tar
+
 # Test, benchmark & evaluation documents (kept locally, not committed)
 docs/BAO_CAO_CHI_TIET_DANH_GIA_CHI_SO.md
 docs/BAO_CAO_CHI_TIET_TEST_CHUC_NANG.md
 docs/TEST_CASES_SPECIFICATION.md
 openmetadata-ui/src/main/resources/ui/src/services/metricEvaluation.test.ts
 run_benchmark.py
-tests/
+/tests/
+openmetadata-ui/src/main/resources/ui/debug.json
+openmetadata-ui/src/main/resources/ui/pnpm-lock.yaml

@@ -20,6 +20,7 @@ import static org.openmetadata.service.Entity.WEB_ANALYTIC_USER_ACTIVITY_REPORT_
 import static org.openmetadata.service.search.SearchClient.ADD_DOMAINS_SCRIPT;
 import static org.openmetadata.service.search.SearchClient.ADD_FOLLOWERS_SCRIPT;
 import static org.openmetadata.service.search.SearchClient.ADD_OWNERS_SCRIPT;
+import static org.openmetadata.service.search.SearchClient.CASCADE_CERTIFICATION_SCRIPT;
 import static org.openmetadata.service.search.SearchClient.DATA_ASSET_SEARCH_ALIAS;
 import static org.openmetadata.service.search.SearchClient.DEFAULT_UPDATE_SCRIPT;
 import static org.openmetadata.service.search.SearchClient.GLOBAL_SEARCH_ALIAS;
@@ -968,6 +969,23 @@ public class SearchRepository {
       }
     }
 
+    // Issue #28229: open the gate when a Table's certification is added, changed, or removed
+    // so cascadeCertificationToChildren fires and pushes the new cert onto every denormalized
+    // child search doc (test_case, test_case_result, test_case_resolution_status, test_suite,
+    // column). Without this the gate stays closed on a cert-only PATCH, the cascade is dead
+    // code, and the DQ dashboard's Certification filter keeps returning the stale cert until
+    // a full reindex.
+    if (entityType.equalsIgnoreCase(Entity.TABLE)) {
+      hasInheritableChanges =
+          hasInheritableChanges
+              || changeDescription.getFieldsAdded().stream()
+                  .anyMatch(field -> field.getName().equals(Entity.FIELD_CERTIFICATION))
+              || changeDescription.getFieldsUpdated().stream()
+                  .anyMatch(field -> field.getName().equals(Entity.FIELD_CERTIFICATION))
+              || changeDescription.getFieldsDeleted().stream()
+                  .anyMatch(field -> field.getName().equals(Entity.FIELD_CERTIFICATION));
+    }
+
     // Check for relationship changes that need propagation
     if (changeDescription.getFieldsAdded().stream()
             .anyMatch(field -> field.getName().equals("upstreamEntityRelationship"))
@@ -1005,7 +1023,7 @@ public class SearchRepository {
       IndexMapping indexMapping,
       EntityInterface entity)
       throws IOException {
-    if (changeDescription == null) {
+    if (changeDescription == null || nullOrEmpty(indexMapping.getChildAliases())) {
       return;
     }
 
@@ -1014,21 +1032,29 @@ public class SearchRepository {
       return;
     }
 
-    List<String> childAliases = indexMapping.getChildAliases(clusterAlias);
-    if (nullOrEmpty(childAliases)) {
-      return;
-    }
-
-    // Domain has subdomains (parent.id) and data products (domains.id) - handle separately
     if (entityType.equalsIgnoreCase(Entity.DOMAIN)) {
       propagateToDomainChildren(entityId, indexMapping, updates);
       return;
     }
 
-    // Other entities: resolve parent field name and propagate to children
     String parentFieldName = resolveParentFieldName(entityType, updates);
     Pair<String, String> parentMatch = new ImmutablePair<>(parentFieldName, entityId);
-    searchClient.updateChildren(childAliases, parentMatch, updates);
+    List<String> entityChildren = getNonTimeSeriesChildAliases(indexMapping);
+    if (!nullOrEmpty(entityChildren)) {
+      searchClient.updateChildren(entityChildren, parentMatch, updates);
+    }
+  }
+
+  private List<String> getNonTimeSeriesChildAliases(IndexMapping indexMapping) {
+    List<String> childAliases = indexMapping.getChildAliases();
+    if (nullOrEmpty(childAliases)) {
+      return List.of();
+    }
+    boolean hasClusterAlias = !nullOrEmpty(clusterAlias);
+    return childAliases.stream()
+        .filter(alias -> !Entity.hasEntityTimeSeriesRepository(alias))
+        .map(alias -> hasClusterAlias ? clusterAlias + INDEX_NAME_SEPARATOR + alias : alias)
+        .toList();
   }
 
   private String resolveParentFieldName(
@@ -1150,6 +1176,47 @@ public class SearchRepository {
 
     AssetCertification certification = getCertificationFromEntity(entity);
     updateEntityCertificationInSearch(entity, certification);
+    cascadeCertificationToChildren(entity, certification);
+  }
+
+  // Pushes the cert change onto every child search doc denormalized from this
+  // entity. Without this the cert filter on the DQ dashboard (which queries
+  // children like test_case/test_case_result/test_case_resolution_status by
+  // `certification.tagLabel.tagFQN`) would silently use the stale cert until a
+  // reindex. RAW_REPLACE in PropagationDescriptor can't be used because it
+  // restores the old value on delete; we drive a dedicated script instead.
+  private void cascadeCertificationToChildren(
+      EntityInterface entity, AssetCertification certification) {
+    String type = entity.getEntityReference().getType();
+    if (!Entity.TABLE.equalsIgnoreCase(type)) {
+      // Scope: Table only. Dashboard/ApiCollection children also have cert in
+      // their mappings; extend here when those denormalization paths are added.
+      return;
+    }
+    IndexMapping indexMapping = entityIndexMap.get(Entity.TABLE);
+    if (indexMapping == null) {
+      return;
+    }
+    List<String> childAliases = indexMapping.getChildAliases(clusterAlias);
+    if (nullOrEmpty(childAliases)) {
+      return;
+    }
+
+    Map<String, Object> params = new HashMap<>();
+    params.put("certification", certification); // null when cert was removed
+
+    Pair<String, String> parentMatch = new ImmutablePair<>("table.id", entity.getId().toString());
+
+    try {
+      searchClient.updateChildren(
+          childAliases, parentMatch, new ImmutablePair<>(CASCADE_CERTIFICATION_SCRIPT, params));
+    } catch (Exception e) {
+      LOG.error(
+          "Failed to cascade certification for table [{}]: {}",
+          entity.getFullyQualifiedName(),
+          e.getMessage(),
+          e);
+    }
   }
 
   private boolean isCertificationUpdated(ChangeDescription change) {

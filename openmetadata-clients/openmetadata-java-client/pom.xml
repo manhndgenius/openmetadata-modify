@@ -5,7 +5,7 @@
     <parent>
         <artifactId>openmetadata-clients</artifactId>
         <groupId>org.open-metadata</groupId>
-        <version>1.12.6</version>
+        <version>1.12.13</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -240,6 +240,7 @@
                             </output>
                             <skipOperationExample>true</skipOperationExample>
                             <skipValidateSpec>true</skipValidateSpec>
+                            <templateDirectory>${project.basedir}/src/main/openapi-templates</templateDirectory>
                         </configuration>
                     </execution>
                 </executions>

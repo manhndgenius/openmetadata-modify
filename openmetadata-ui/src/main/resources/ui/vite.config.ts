@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => {
     env.VITE_DEV_SERVER_TARGET ||
     env.DEV_SERVER_TARGET ||
     'http://localhost:8585/';
+  const dqApiTarget = env.VITE_DQ_API_TARGET || 'http://localhost:8000/';
 
   // Use empty base so dynamic imports use relative paths
   // The actual BASE_PATH is injected at runtime by the Java backend via ${basePath} replacement
@@ -105,6 +106,10 @@ export default defineConfig(({ mode }) => {
     },
 
     css: {
+      // Less worker processes can time out on constrained Docker builders while
+      // compiling Ant Design imports. Run preprocessors in the main process so
+      // a slow stylesheet does not fail an otherwise healthy production build.
+      preprocessorMaxWorkers: 0,
       preprocessorOptions: {
         less: {
           javascriptEnabled: true,
@@ -128,6 +133,12 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
           ws: true,
+        },
+        '/dq-api/': {
+          target: dqApiTarget,
+          changeOrigin: true,
+          secure: false,
+          rewrite: (requestPath) => requestPath.replace(/^\/dq-api/, ''),
         },
       },
       watch: {
@@ -202,6 +213,9 @@ export default defineConfig(({ mode }) => {
 
     define: {
       'process.env.NODE_ENV': JSON.stringify(mode),
+      'process.env.BRAND_NAME': JSON.stringify(
+        env.BRAND_NAME || 'OpenMetadata'
+      ),
       global: 'globalThis',
     },
   };

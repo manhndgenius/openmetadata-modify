@@ -278,6 +278,14 @@ const AddCustomProperty = ({
         placeholder: t('label.name'),
         rules: [
           {
+            max: 256,
+            message: t('message.entity-size-in-between', {
+              entity: t('label.name'),
+              min: 1,
+              max: 256,
+            }),
+          },
+          {
             pattern: CUSTOM_PROPERTY_NAME_REGEX,
             message: t('message.custom-property-name-validation'),
           },
