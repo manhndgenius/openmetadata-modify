@@ -1,0 +1,60 @@
+x-dq-environment: &dq-environment
+  APP_ENV: production
+  OM_API: http://openmetadata-server:8585
+  BOT_TOKEN: ${BOT_TOKEN:?Set BOT_TOKEN to the OpenMetadata bot JWT}
+  POSTGRES_HOST: ${DB_HOST:?Set DB_HOST to the existing PostgreSQL host}
+  POSTGRES_PORT: ${DB_PORT:-5432}
+  POSTGRES_DB: ${OM_DATABASE:-openmetadata_db}
+  POSTGRES_USER: ${DB_USER:-openmetadata_user}
+  POSTGRES_PASSWORD: ${DB_USER_PASSWORD:?Set DB_USER_PASSWORD}
+  POSTGRES_SSLMODE: ${DQ_DB_SSLMODE:-disable}
+  POSTGRES_CONNECT_TIMEOUT: ${DQ_DB_CONNECT_TIMEOUT:-10}
+  CORS_ORIGINS: ${DQ_CORS_ORIGINS:?Set DQ_CORS_ORIGINS to the OpenMetadata browser origin}
+  ENABLE_ADVANCED_RULES: ${ENABLE_ADVANCED_RULES:-true}
+  ENABLE_STATISTICAL_RULES: ${ENABLE_STATISTICAL_RULES:-false}
+  LLM_API: ${LLM_API:?Set LLM_API for Advanced rule generation}
+  LLM_MODEL: ${LLM_MODEL:?Set LLM_MODEL for Advanced rule generation}
+  LLM_BASE_URL: ${LLM_BASE_URL:?Set LLM_BASE_URL for the OpenAI-compatible provider}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+  LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+
+services:
+  execute-migrate-all:
+    image: ${OM_SERVER_IMAGE:?Set OM_SERVER_IMAGE to the customized OpenMetadata image}
+
+  openmetadata-server:
+    image: ${OM_SERVER_IMAGE:?Set OM_SERVER_IMAGE to the customized OpenMetadata image}
+
+  dq-migrate:
+    image: ${DQ_BACKEND_IMAGE:?Set DQ_BACKEND_IMAGE}
+    container_name: dq_rule_migrate
+    restart: "no"
+    command: ["python", "scripts/migrate_database.py"]
+    environment: *dq-environment
+    networks:
+      - app_net
+
+  dq-rule-backend:
+    image: ${DQ_BACKEND_IMAGE:?Set DQ_BACKEND_IMAGE}
+    container_name: dq_rule_backend
+    restart: always
+    environment: *dq-environment
+    ports:
+      - "${DQ_API_PORT:-8000}:8000"
+    depends_on:
+      dq-migrate:
+        condition: service_completed_successfully
+      openmetadata-server:
+        condition: service_healthy
+    networks:
+      - app_net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)); sys.exit(0 if data.get('status') == 'healthy' else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s

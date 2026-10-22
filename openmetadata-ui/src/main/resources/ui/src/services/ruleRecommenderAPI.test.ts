@@ -14,6 +14,124 @@
 import { ruleRecommenderAPI } from './ruleRecommenderAPI';
 
 describe('ruleRecommenderAPI', () => {
+  describe('saved rules', () => {
+    it('loads PostgreSQL rules without invoking generation fallback', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          items: [
+            {
+              id: 'rule-1',
+              rule_type: 'columnValuesToBeNotNull',
+              table_name: 'encounters',
+              table_fqn: 'service.database.public.encounters',
+              target_columns: ['id'],
+              reason: 'Identifier is required',
+              status: 'APPLIED',
+              confidence: 0.95,
+            },
+          ],
+          total: 1,
+          tables: [
+            {
+              table_fqn: 'service.database.public.encounters',
+              table_name: 'encounters',
+              rule_count: 1,
+            },
+          ],
+          status_counts: { APPLIED: 1 },
+        }),
+      });
+      global.fetch = fetchMock as jest.Mock;
+
+      const result = await ruleRecommenderAPI.getSavedRules();
+
+      expect(result.items[0].table_fqn).toBe(
+        'service.database.public.encounters'
+      );
+      expect(result.items[0].status).toBe('APPLIED');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/dq-api/api/v1/rules/saved'
+      );
+    });
+  });
+
+  describe('rule lifecycle', () => {
+    it('persists the canonical review status expected by the backend', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({}),
+      });
+      global.fetch = fetchMock as jest.Mock;
+
+      await ruleRecommenderAPI.reviewRule('rule-1', 'ACCEPTED');
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/dq-api/api/v1/rules/rule-1/review',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'ACCEPTED',
+            edited_parameters: undefined,
+          }),
+        })
+      );
+    });
+
+    it('returns IDs persisted as APPLIED after publishing', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          published_count: 1,
+          applied_rule_ids: ['rule-1'],
+          failed_test_cases: [],
+        }),
+      });
+      global.fetch = fetchMock as jest.Mock;
+
+      const result = await ruleRecommenderAPI.publishRules(
+        'service.database.public.encounters',
+        ['rule-1']
+      );
+
+      expect(result.publishedRuleIds).toEqual(['rule-1']);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/dq-api/api/v1/rules/publish',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            table_name: 'encounters',
+            table_fqn: 'service.database.public.encounters',
+            rule_ids: ['rule-1'],
+          }),
+        })
+      );
+    });
+
+    it('does not bypass the DQ backend when publishing fails', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: jest.fn().mockResolvedValue({ detail: 'DQ backend unavailable' }),
+      });
+      global.fetch = fetchMock as jest.Mock;
+
+      await expect(
+        ruleRecommenderAPI.publishRules(
+          'service.database.public.encounters',
+          ['rule-1']
+        )
+      ).rejects.toThrow('DQ backend unavailable');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/dq-api/api/v1/rules/publish',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
   describe('server-side batch contracts', () => {
     it('previews BASIC generation with the canonical TABLES scope', async () => {
       const fetchMock = jest.fn().mockResolvedValue({
@@ -40,7 +158,7 @@ describe('ruleRecommenderAPI', () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/recommendation-jobs/preview',
+        '/dq-api/api/v1/recommendation-jobs/preview',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({
@@ -71,7 +189,7 @@ describe('ruleRecommenderAPI', () => {
       await ruleRecommenderAPI.startNtApplicationJob(scope);
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/nt-application-jobs',
+        '/dq-api/api/v1/nt-application-jobs',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ scope }),
@@ -100,7 +218,7 @@ describe('ruleRecommenderAPI', () => {
 
       expect(result.run_id).toBe('nt-run-1');
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/nt-runs',
+        '/dq-api/api/v1/nt-runs',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({
@@ -125,7 +243,7 @@ describe('ruleRecommenderAPI', () => {
         schema
       );
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/nt-rules/config-schema'
+        '/dq-api/api/v1/nt-rules/config-schema'
       );
     });
   });
@@ -162,11 +280,11 @@ describe('ruleRecommenderAPI', () => {
 
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:8000/api/v1/nt-rules/NT1_TableNaming/config'
+        '/dq-api/api/v1/nt-rules/NT1_TableNaming/config'
       );
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
-        'http://localhost:8000/api/v1/nt-rules/NT1_TableNaming/config',
+        '/dq-api/api/v1/nt-rules/NT1_TableNaming/config',
         expect.objectContaining({
           method: 'PUT',
           body: JSON.stringify({
@@ -192,7 +310,7 @@ describe('ruleRecommenderAPI', () => {
       await ruleRecommenderAPI.deleteNtRuleConfig('NT1_TableNaming', 2);
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/nt-rules/NT1_TableNaming/config?expected_version=2',
+        '/dq-api/api/v1/nt-rules/NT1_TableNaming/config?expected_version=2',
         { method: 'DELETE' }
       );
     });
@@ -247,7 +365,7 @@ describe('ruleRecommenderAPI', () => {
         },
       });
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost:8000/api/v1/recommendations/statistical/generate',
+        '/dq-api/api/v1/recommendations/statistical/generate',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({
@@ -311,11 +429,11 @@ describe('ruleRecommenderAPI', () => {
 
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:8000/api/v1/context/healthcare_postgres.HealthCare.public.patients'
+        '/dq-api/api/v1/context/healthcare_postgres.HealthCare.public.patients'
       );
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
-        'http://localhost:8000/api/v1/advanced-rules/recommend',
+        '/dq-api/api/v1/advanced-rules/recommend',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({

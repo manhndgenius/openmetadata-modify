@@ -12,7 +12,6 @@
  */
 
 import {
-  ArrowRightOutlined,
   CheckCircleOutlined,
   CheckOutlined,
   CloseCircleOutlined,
@@ -43,6 +42,7 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
   Tooltip,
@@ -51,7 +51,6 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import {
   CartesianGrid,
   Line,
@@ -61,23 +60,23 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ProfilerTabPath } from '../../components/Database/Profiler/ProfilerDashboard/profilerDashboard.interface';
 import PageLayoutV1 from '../../components/PageLayoutV1/PageLayoutV1';
-import { EntityTabs, EntityType } from '../../enums/entity.enum';
 import {
   CandidateRule,
-  getRecommenderBaseUrl,
   NtGovernanceStatus,
   NtTestDefinition,
   renderParameterizedSql,
   ruleRecommenderAPI,
-  setRecommenderBaseUrl,
   TableOption,
 } from '../../services/ruleRecommenderAPI';
-import { getEntityDetailsPath } from '../../utils/RouterUtils';
-import BatchOperationsPanel from './BatchOperationsPanel';
+import BatchOperationsPanel, {
+  CandidateGenerationComplete,
+} from './BatchOperationsPanel';
+import RuleTargetTree from './AiRules/RuleTargetTree';
+import { isSavedRuleVisible } from './AiRules/ruleVisibility';
 import NTRuleConfigModal from './NtGovernance/NTRuleConfigModal';
 import { useNtRuleConfigModal } from './NtGovernance/useNtRuleConfigModal';
+import { mapPublishTablesInBatches } from './publishTableBatches';
 import './rule-recommender.style.less';
 
 const { Text, Paragraph } = Typography;
@@ -415,10 +414,9 @@ const EvidencePopover = ({
 
 export const RuleRecommenderPage = () => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const [loading, setLoading] = useState<boolean>(false);
   const [publishing, setPublishing] = useState<boolean>(false);
-  const [backendHealth, setBackendHealth] = useState<{
+  const [_backendHealth, setBackendHealth] = useState<{
     status: string;
     openmetadata_connected: boolean;
   }>({
@@ -429,6 +427,11 @@ export const RuleRecommenderPage = () => {
   const [tables, setTables] = useState<TableOption[]>([]);
   const [selectedTableFqn, setSelectedTableFqn] = useState<string>('');
   const [ruleTableFilter, setRuleTableFilter] = useState<string>('ALL');
+  const [resultsMode, setResultsMode] = useState<'GENERATED' | 'SAVED'>(
+    'SAVED'
+  );
+  const [generatedJobId, setGeneratedJobId] = useState<string>('');
+  const [generatedTableFqns, setGeneratedTableFqns] = useState<string[]>([]);
 
   // Controlled pagination state
   const [rulesCurrentPage, setRulesCurrentPage] = useState<number>(1);
@@ -448,24 +451,13 @@ export const RuleRecommenderPage = () => {
   const [regexEditValue, setRegexEditValue] = useState<string>('');
 
   // NT Rule Config Modal
-  const [ntRuleConfigModal, setNtRuleConfigModal] = useState<{
-    isOpen: boolean;
-    selectedRule: NtTestDefinition | null;
-    config: Record<string, unknown> | null;
-    isSaving: boolean;
-    loadingRuleName: string | null;
-  }>({
-    isOpen: false,
-    selectedRule: null,
-    config: null,
-    isSaving: false,
-    loadingRuleName: null,
-  });
+  const ntRuleConfigModal = useNtRuleConfigModal({ closeAfterSave: false });
 
   // Dynamic parameters state for Edit Rule Modal
   const [dynamicParams, setDynamicParams] = useState<
     Array<{ key: string; value: string }>
   >([]);
+  const [allowedValueInputs, setAllowedValueInputs] = useState<string[]>([]);
 
   // Top-level tabs: 'rules' vs 'nt-governance'
   const [activeTab, setActiveTab] = useState<'rules' | 'nt-governance'>(
@@ -480,15 +472,19 @@ export const RuleRecommenderPage = () => {
     'ALL'
   );
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [ntSearchQuery, setNtSearchQuery] = useState<string>('');
 
   // Modals
   const [editingRule, setEditingRule] = useState<CandidateRule | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
-  const [customApiUrl, setCustomApiUrl] = useState<string>(
-    getRecommenderBaseUrl()
-  );
   const [editForm] = Form.useForm();
+
+  const loadSavedRules = useCallback(async () => {
+    const saved = await ruleRecommenderAPI.getSavedRules();
+    setRules(saved.items.filter(isRuleVisible));
+
+    return saved;
+  }, []);
 
   // Load initial tables and check health
   useEffect(() => {
@@ -500,51 +496,23 @@ export const RuleRecommenderPage = () => {
 
         const openmetadataTables =
           await ruleRecommenderAPI.getOpenMetadataTables();
+        setTables(openmetadataTables);
         if (openmetadataTables.length > 0) {
-          setTables(openmetadataTables);
           setSelectedTableFqn(openmetadataTables[0].fullyQualifiedName);
-        } else {
-          // Fallback initial table options
-          const defaultOptions: TableOption[] = [
-            {
-              name: 'customers',
-              fullyQualifiedName:
-                'sample_ecommerce_service.ecommerce_db.sales.customers',
-              description: 'Customer contact and demographic profiles',
-              columnsCount: 5,
-              database: 'ecommerce_db',
-              schema: 'sales',
-            },
-            {
-              name: 'orders',
-              fullyQualifiedName:
-                'sample_ecommerce_service.ecommerce_db.sales.orders',
-              description: 'Customer purchase orders and status',
-              columnsCount: 5,
-              database: 'ecommerce_db',
-              schema: 'sales',
-            },
-            {
-              name: 'products',
-              fullyQualifiedName:
-                'sample_ecommerce_service.ecommerce_db.sales.products',
-              description: 'Catalog products, pricing and inventory',
-              columnsCount: 5,
-              database: 'ecommerce_db',
-              schema: 'sales',
-            },
-          ];
-          setTables(defaultOptions);
-          setSelectedTableFqn(defaultOptions[0].fullyQualifiedName);
         }
+        await loadSavedRules();
+      } catch (error) {
+        notification.error({
+          message: 'Cannot initialize AI Rule Workspace',
+          description: String(error),
+        });
       } finally {
         setLoading(false);
       }
     };
 
     initialize();
-  }, []);
-
+  }, [loadSavedRules]);
 
   const loadNtGovernanceStatus = useCallback(async () => {
     if (!selectedTableFqn) {
@@ -576,7 +544,22 @@ export const RuleRecommenderPage = () => {
     loadNtGovernanceStatus();
   }, [loadNtGovernanceStatus]);
 
-
+  useEffect(() => {
+    if (
+      activeTab === 'nt-governance' &&
+      ntDefinitions.length > 0 &&
+      !ntRuleConfigModal.selectedRule &&
+      !ntRuleConfigModal.isLoading
+    ) {
+      void ntRuleConfigModal.open(ntDefinitions[0].name);
+    }
+  }, [
+    activeTab,
+    ntDefinitions,
+    ntRuleConfigModal.isLoading,
+    ntRuleConfigModal.open,
+    ntRuleConfigModal.selectedRule,
+  ]);
 
   // Fetch existing test cases for the selected table
   const handleViewExistingTestCases = async () => {
@@ -592,6 +575,26 @@ export const RuleRecommenderPage = () => {
     } finally {
       setLoadingTestCases(false);
     }
+  };
+
+  const getRulesInActiveView = () => {
+    const tableFqns =
+      resultsMode === 'GENERATED'
+        ? generatedTableFqns
+        : rules
+            .filter(isSavedRuleVisible)
+            .map((rule) => rule.table_fqn)
+            .filter((tableFqn): tableFqn is string => Boolean(tableFqn));
+    const activeTables = new Set(tableFqns);
+
+    return rules.filter(
+      (rule) =>
+        isRuleVisible(rule) &&
+        (resultsMode !== 'SAVED' || isSavedRuleVisible(rule)) &&
+        Boolean(rule.table_fqn) &&
+        activeTables.has(rule.table_fqn as string) &&
+        (ruleTableFilter === 'ALL' || rule.table_fqn === ruleTableFilter)
+    );
   };
 
   // Review single rule action
@@ -614,56 +617,78 @@ export const RuleRecommenderPage = () => {
       return;
     }
 
-    await ruleRecommenderAPI.reviewRule(ruleId, action);
-    setRules((prev) =>
-      prev.map((r) =>
-        r.id === ruleId
-          ? { ...r, status: action === 'ACCEPT' ? 'ACCEPTED' : 'REJECTED' }
-          : r
-      )
-    );
-    notification.info({
-      message: action === 'ACCEPT' ? 'Rule Accepted' : 'Rule Rejected',
-      description: `Rule ${ruleId} has been ${
-        action === 'ACCEPT' ? 'accepted' : 'rejected'
-      }.`,
-    });
+    const nextStatus = action === 'ACCEPT' ? 'ACCEPTED' : 'REJECTED';
+    try {
+      await ruleRecommenderAPI.reviewRule(ruleId, nextStatus);
+      setRules((prev) =>
+        prev.map((r) => (r.id === ruleId ? { ...r, status: nextStatus } : r))
+      );
+      notification.info({
+        message: action === 'ACCEPT' ? 'Rule Accepted' : 'Rule Rejected',
+        description: `Rule ${ruleId} has been ${
+          action === 'ACCEPT' ? 'accepted' : 'rejected'
+        }.`,
+      });
+    } catch (error) {
+      notification.error({
+        message: 'Cannot update rule status',
+        description: String(error),
+      });
+    }
   };
 
   // Accept all pending rules
-  const handleAcceptAll = () => {
-    const unconfiguredCount = rules.filter(
+  const handleAcceptAll = async () => {
+    const activeRules = getRulesInActiveView();
+    const reviewableRules = activeRules.filter(
       (rule) =>
-        isRuleVisible(rule) &&
+        (rule.status === 'PENDING' ||
+          rule.status === 'DRAFT' ||
+          rule.status === 'EDITED') &&
+        hasConfiguredAllowedValues(rule)
+    );
+    const unconfiguredCount = activeRules.filter(
+      (rule) =>
         (rule.status === 'PENDING' ||
           rule.status === 'DRAFT' ||
           rule.status === 'EDITED') &&
         !hasConfiguredAllowedValues(rule)
     ).length;
-    setRules((prev) =>
-      prev.map((r) =>
-        isRuleVisible(r) &&
-        hasConfiguredAllowedValues(r) &&
-        (r.status === 'PENDING' ||
-          r.status === 'DRAFT' ||
-          r.status === 'EDITED')
-          ? { ...r, status: 'ACCEPTED' }
-          : r
+    const results = await Promise.allSettled(
+      reviewableRules.map((rule) =>
+        ruleRecommenderAPI.reviewRule(rule.id, 'ACCEPTED')
       )
     );
-    notification.success({
+    const acceptedRuleIds = new Set(
+      reviewableRules
+        .filter((_, index) => results[index].status === 'fulfilled')
+        .map((rule) => rule.id)
+    );
+    const failedCount = results.length - acceptedRuleIds.size;
+
+    setRules((prev) =>
+      prev.map((r) =>
+        acceptedRuleIds.has(r.id) ? { ...r, status: 'ACCEPTED' } : r
+      )
+    );
+    notification[failedCount > 0 ? 'warning' : 'success']({
       message: 'Batch Review',
-      description:
+      description: [
+        `${acceptedRuleIds.size} rule(s) persisted as Accepted.`,
+        failedCount > 0 ? `${failedCount} update(s) failed.` : '',
         unconfiguredCount > 0
           ? `${unconfiguredCount} Values In Set rule(s) were skipped because allowedValues are not configured.`
-          : 'All pending rules for this table have been marked as Accepted.',
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
     });
   };
 
   // Publish accepted rules to OpenMetadata
   const handlePublish = async () => {
-    const acceptedRules = rules.filter(
-      (r) => isRuleVisible(r) && r.status === 'ACCEPTED'
+    const acceptedRules = getRulesInActiveView().filter(
+      (r) => r.status === 'ACCEPTED'
     );
     const unconfiguredRule = acceptedRules.find(
       (rule) => !hasConfiguredAllowedValues(rule)
@@ -689,39 +714,40 @@ export const RuleRecommenderPage = () => {
 
     setPublishing(true);
     try {
-      const res = await ruleRecommenderAPI.publishRules(
-        selectedTableFqn,
-        acceptedRules
+      const rulesByTable = acceptedRules.reduce<
+        Record<string, CandidateRule[]>
+      >((groups, rule) => {
+        const tableFqn = rule.table_fqn || selectedTableFqn;
+        if (tableFqn) {
+          groups[tableFqn] = [...(groups[tableFqn] ?? []), rule];
+        }
+
+        return groups;
+      }, {});
+      const results = await mapPublishTablesInBatches(
+        Object.entries(rulesByTable),
+        ([tableFqn, tableRules]) =>
+          ruleRecommenderAPI.publishRules(tableFqn, tableRules)
+      );
+      const publishedCount = results.reduce(
+        (total, result) => total + result.publishedCount,
+        0
+      );
+      const publishedRuleIds = new Set(
+        results.flatMap((result) => result.publishedRuleIds ?? [])
       );
 
-      const tableDataQualityUrl = getEntityDetailsPath(
-        EntityType.TABLE,
-        selectedTableFqn,
-        EntityTabs.PROFILER,
-        ProfilerTabPath.DATA_QUALITY
+      setRules((previous) =>
+        previous.map((rule) =>
+          publishedRuleIds.has(rule.id) ? { ...rule, status: 'APPLIED' } : rule
+        )
       );
 
       notification.success({
         message: 'Publish Thành Công!',
-        description: (
-          <div>
-            <p style={{ margin: 0 }}>
-              Đã đồng bộ <b>{res.publishedCount}</b> rule thành test cases trong
-              OpenMetadata cho bảng{' '}
-              <b>{selectedTable?.name || selectedTableFqn}</b>.
-            </p>
-            <div style={{ marginTop: 10 }}>
-              <Button
-                icon={<ArrowRightOutlined />}
-                size="small"
-                type="primary"
-                onClick={() => navigate(tableDataQualityUrl)}
-              >
-                Xem trong Bảng ({selectedTable?.name || 'Table'})
-              </Button>
-            </div>
-          </div>
-        ),
+        description: `Đã đồng bộ ${publishedCount} rule thành Test Case cho ${
+          Object.keys(rulesByTable).length
+        } bảng.`,
         duration: 10,
       });
     } catch {
@@ -748,10 +774,24 @@ export const RuleRecommenderPage = () => {
     // Initialize dynamic params from existing parameters
     const existingParams = rule.parameters || {};
     const initialDynamicParams: Array<{ key: string; value: string }> = [];
-    Object.entries(existingParams).forEach(([key, val]) => {
-      initialDynamicParams.push({ key, value: String(val) });
-    });
+    if (rule.engine !== 'ADVANCED') {
+      Object.entries(existingParams).forEach(([key, val]) => {
+        if (key !== 'allowedValues') {
+          initialDynamicParams.push({ key, value: String(val) });
+        }
+      });
+    }
     setDynamicParams(initialDynamicParams);
+    const existingAllowedValues = Array.isArray(existingParams.allowedValues)
+      ? existingParams.allowedValues.map(String)
+      : [];
+    setAllowedValueInputs(
+      rule.rule_type === 'columnValuesToBeInSet'
+        ? existingAllowedValues.length > 0
+          ? existingAllowedValues
+          : ['']
+        : []
+    );
 
     editForm.setFieldsValue({
       reason: rule.reason,
@@ -785,14 +825,37 @@ export const RuleRecommenderPage = () => {
     setDynamicParams(updated);
   };
 
+  const handleAddAllowedValue = () => {
+    setAllowedValueInputs((previous) => [...previous, '']);
+  };
+
+  const handleRemoveAllowedValue = (index: number) => {
+    setAllowedValueInputs((previous) =>
+      previous.length === 1
+        ? ['']
+        : previous.filter((_, valueIndex) => valueIndex !== index)
+    );
+  };
+
+  const handleUpdateAllowedValue = (index: number, value: string) => {
+    setAllowedValueInputs((previous) =>
+      previous.map((currentValue, valueIndex) =>
+        valueIndex === index ? value : currentValue
+      )
+    );
+  };
+
   // Save edited rule
   const handleSaveEditedRule = () => {
-    editForm.validateFields().then((values) => {
+    editForm.validateFields().then(async (values) => {
       if (!editingRule) {
         return;
       }
 
-      let parsedParams: Record<string, unknown> = {};
+      let parsedParams: Record<string, unknown> =
+        editingRule.engine === 'ADVANCED'
+          ? { ...(editingRule.parameters || {}) }
+          : {};
       const rangeKeys = RANGE_PARAMETER_KEYS[editingRule.rule_type];
 
       if (rangeKeys) {
@@ -807,20 +870,54 @@ export const RuleRecommenderPage = () => {
         };
       } else if (editingRule.rule_type === 'columnValuesToMatchRegex') {
         parsedParams = { regex: regexEditValue };
+      } else if (editingRule.rule_type === 'columnValuesToBeInSet') {
+        const allowedValues = Array.from(
+          new Set(
+            allowedValueInputs.map((value) => value.trim()).filter(Boolean)
+          )
+        );
+
+        if (allowedValues.length === 0) {
+          notification.warning({
+            message: 'Allowed values required',
+            description: 'Add at least one allowed value before saving.',
+          });
+
+          return;
+        }
+
+        parsedParams = { allowedValues };
       }
 
       // Merge dynamic parameters
-      dynamicParams.forEach(({ key, value }) => {
-        if (key.trim()) {
-          // Try to parse value as number if possible
-          const numValue = Number(value);
-          parsedParams[key.trim()] = isNaN(numValue) ? value : numValue;
-        }
-      });
+      if (editingRule.engine !== 'ADVANCED') {
+        dynamicParams.forEach(({ key, value }) => {
+          if (key.trim()) {
+            // Try to parse value as number if possible
+            const numValue = Number(value);
+            parsedParams[key.trim()] = isNaN(numValue) ? value : numValue;
+          }
+        });
+      }
 
       const editedSql = isCustomSqlRule(editingRule)
         ? values.sql_expression?.trim()
         : editingRule.sql_expression;
+
+      try {
+        await ruleRecommenderAPI.reviewRule(
+          editingRule.id,
+          'EDITED',
+          parsedParams
+        );
+      } catch (error) {
+        notification.error({
+          message: 'Cannot save edited rule',
+          description: String(error),
+        });
+
+        return;
+      }
 
       setRules((prev) =>
         prev.map((r) =>
@@ -847,19 +944,54 @@ export const RuleRecommenderPage = () => {
     });
   };
 
-  // Filtered rules
+  const activeTableFqns = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          resultsMode === 'GENERATED'
+            ? generatedTableFqns
+            : rules
+                .filter(isSavedRuleVisible)
+                .map((rule) => rule.table_fqn)
+                .filter((tableFqn): tableFqn is string => Boolean(tableFqn))
+        )
+      ).sort(),
+    [generatedTableFqns, resultsMode, rules]
+  );
+
+  const modeRules = useMemo(() => {
+    const activeTables = new Set(activeTableFqns);
+
+    return rules.filter(
+      (rule) =>
+        isRuleVisible(rule) &&
+        (resultsMode !== 'SAVED' || isSavedRuleVisible(rule)) &&
+        Boolean(rule.table_fqn) &&
+        activeTables.has(rule.table_fqn as string)
+    );
+  }, [activeTableFqns, resultsMode, rules]);
+
+  const scopedRules = useMemo(
+    () =>
+      ruleTableFilter === 'ALL'
+        ? modeRules
+        : modeRules.filter((rule) => rule.table_fqn === ruleTableFilter),
+    [modeRules, ruleTableFilter]
+  );
+
   const filteredRules = useMemo(() => {
-    return rules.filter((r) => {
-      if (!isRuleVisible(r)) {
-        return false;
-      }
-      if (statusFilter !== 'ALL' && r.status !== statusFilter) {
+    return scopedRules.filter((r) => {
+      const matchesStatus =
+        statusFilter === 'ALL' ||
+        (statusFilter === 'PENDING'
+          ? r.status === 'DRAFT' ||
+            r.status === 'PENDING' ||
+            r.status === 'EDITED'
+          : r.status === statusFilter);
+      if (!matchesStatus) {
         return false;
       }
       if (scopeFilter !== 'ALL' && r.scope !== scopeFilter) {
-        return false;
-      }
-      if (ruleTableFilter !== 'ALL' && r.table_name !== ruleTableFilter) {
         return false;
       }
       if (searchQuery.trim()) {
@@ -867,18 +999,42 @@ export const RuleRecommenderPage = () => {
         const matchesRule = r.rule_type.toLowerCase().includes(query);
         const matchesCol = (r.column_name || '').toLowerCase().includes(query);
         const matchesReason = (r.reason || '').toLowerCase().includes(query);
-        if (!matchesRule && !matchesCol && !matchesReason) {
+        const matchesTable = (r.table_fqn || r.table_name || '')
+          .toLowerCase()
+          .includes(query);
+        if (!matchesRule && !matchesCol && !matchesReason && !matchesTable) {
           return false;
         }
       }
 
       return true;
     });
-  }, [rules, statusFilter, scopeFilter, ruleTableFilter, searchQuery]);
+  }, [scopedRules, statusFilter, scopeFilter, searchQuery]);
 
-  const ruleTables = useMemo(() => {
-    return Array.from(new Set(rules.map((r) => r.table_name).filter(Boolean)));
-  }, [rules]);
+  const filteredNtDefinitions = useMemo(() => {
+    const query = ntSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return ntDefinitions;
+    }
+
+    return ntDefinitions.filter((definition) =>
+      [definition.name, definition.displayName, definition.description]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query))
+    );
+  }, [ntDefinitions, ntSearchQuery]);
+
+  const ruleCountByTable = useMemo(
+    () =>
+      modeRules.reduce<Record<string, number>>((counts, rule) => {
+        if (rule.table_fqn) {
+          counts[rule.table_fqn] = (counts[rule.table_fqn] ?? 0) + 1;
+        }
+
+        return counts;
+      }, {}),
+    [modeRules]
+  );
 
   // Reset pagination to page 1 whenever filters change
   useEffect(() => {
@@ -888,7 +1044,7 @@ export const RuleRecommenderPage = () => {
   // Statistics
   // DRAFT is treated as "pending review" — both are pre-review states.
   const stats = useMemo(() => {
-    const visibleRules = rules.filter(isRuleVisible);
+    const visibleRules = scopedRules;
     const total = visibleRules.length;
     const pending = visibleRules.filter(
       (r) =>
@@ -912,16 +1068,15 @@ export const RuleRecommenderPage = () => {
       applied,
       avgConfidence: Math.round(avgConfidence),
     };
-  }, [rules]);
+  }, [scopedRules]);
 
   const selectedTable = useMemo(() => {
     return tables.find((t) => t.fullyQualifiedName === selectedTableFqn);
   }, [tables, selectedTableFqn]);
 
-
   // Table Columns definition
   const columns: ColumnsType<CandidateRule> = [
-    ...(ruleTables.length > 1
+    ...(activeTableFqns.length > 1
       ? [
           {
             title: 'Table',
@@ -1298,29 +1453,6 @@ export const RuleRecommenderPage = () => {
           </div>
 
           <div className="header-actions">
-            <div className="status-pill">
-              <span
-                className={`status-dot ${
-                  backendHealth.status === 'ok' ||
-                  backendHealth.status === 'online'
-                    ? 'online'
-                    : 'offline'
-                }`}
-              />
-              <span>
-                Backend API:{' '}
-                {backendHealth.status === 'ok' ||
-                backendHealth.status === 'online'
-                  ? 'Connected'
-                  : 'Offline (Mock Mode)'}
-              </span>
-            </div>
-            <Tooltip title="Configure Rule Recommender API Endpoint">
-              <Button
-                icon={<SettingOutlined />}
-                onClick={() => setIsConfigModalOpen(true)}
-              />
-            </Tooltip>
             {activeTab === 'rules' && (
               <Button
                 disabled={stats.accepted === 0}
@@ -1358,225 +1490,270 @@ export const RuleRecommenderPage = () => {
         {activeTab === 'rules' && (
           <>
             <BatchOperationsPanel
-              onCandidateComplete={async (tableFqns) => {
-                const uniqueFqns = Array.from(new Set(tableFqns));
+              aiOnly
+              onCandidateComplete={async (
+                result: CandidateGenerationComplete
+              ) => {
+                const uniqueFqns = Array.from(new Set(result.tableFqns));
                 if (uniqueFqns.length === 0) {
                   return;
                 }
                 setSelectedTableFqn(uniqueFqns[0]);
-                const generatedRules = await Promise.all(
-                  uniqueFqns.map((fqn) => ruleRecommenderAPI.getRules(fqn))
-                );
-                setRules(generatedRules.flat().filter(isRuleVisible));
-              }}
-              onNtComplete={async (tableFqns) => {
-                if (tableFqns.includes(selectedTableFqn)) {
-                  await loadNtGovernanceStatus();
-                }
-              }}
-              onOpenTable={async (tableFqn) => {
-                setSelectedTableFqn(tableFqn);
-                setLoading(true);
-                try {
-                  setRules(
-                    (await ruleRecommenderAPI.getRules(tableFqn)).filter(
-                      isRuleVisible
-                    )
-                  );
-                } finally {
-                  setLoading(false);
-                }
+                setGeneratedJobId(result.job.job_id);
+                setGeneratedTableFqns(uniqueFqns);
+                setRuleTableFilter('ALL');
+                setResultsMode('GENERATED');
+                await loadSavedRules();
               }}
             />
 
+            <div className="ai-results-mode-bar">
+              <Radio.Group
+                buttonStyle="solid"
+                value={resultsMode}
+                onChange={(event) => {
+                  setResultsMode(event.target.value);
+                  setStatusFilter('ALL');
+                  setRuleTableFilter('ALL');
+                }}
+              >
+                <Radio.Button
+                  disabled={generatedTableFqns.length === 0}
+                  value="GENERATED"
+                >
+                  Generated Results
+                  {generatedJobId ? ` · ${generatedJobId.slice(0, 8)}` : ''}
+                </Radio.Button>
+                <Radio.Button value="SAVED">All Saved Rules</Radio.Button>
+              </Radio.Group>
+              <Text type="secondary">
+                {resultsMode === 'GENERATED'
+                  ? 'Only tables from the latest generation are shown.'
+                  : 'Draft, Accepted and Rejected rules from PostgreSQL are shown.'}
+              </Text>
+            </div>
+
+            {resultsMode === 'GENERATED' && (
+              <Alert
+                showIcon
+                action={
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setResultsMode('SAVED');
+                      setStatusFilter('ALL');
+                      setRuleTableFilter('ALL');
+                    }}
+                  >
+                    Browse all saved rules
+                  </Button>
+                }
+                className="generated-results-summary"
+                message={`${generatedTableFqns.length} table(s) were included in generation job ${generatedJobId}.`}
+                type="info"
+              />
+            )}
+
             {/* Metric KPI cards */}
             <Row gutter={[16, 16]}>
-              <Col lg={4} sm={8} xs={12}>
+              <Col lg={6} sm={12} xs={24}>
                 <div className="stat-card">
                   <span className="stat-label">Total Rules</span>
                   <span className="stat-value primary">{stats.total}</span>
                 </div>
               </Col>
-              <Col lg={4} sm={8} xs={12}>
+              <Col lg={6} sm={12} xs={24}>
                 <div className="stat-card">
-                  <span className="stat-label">Pending Review</span>
+                  <span className="stat-label">
+                    {resultsMode === 'SAVED' ? 'Draft' : 'Pending Review'}
+                  </span>
                   <span className="stat-value warning">{stats.pending}</span>
                 </div>
               </Col>
-              <Col lg={4} sm={8} xs={12}>
-                <div className="stat-card">
-                  <span className="stat-label">Already Applied</span>
-                  <span className="stat-value success">{stats.applied}</span>
-                </div>
-              </Col>
-              <Col lg={4} sm={8} xs={12}>
+              <Col lg={6} sm={12} xs={24}>
                 <div className="stat-card">
                   <span className="stat-label">Accepted</span>
-                  <span className="stat-value success">{stats.accepted}</span>
+                  <span className="stat-value success">
+                    {stats.accepted}
+                  </span>
                 </div>
               </Col>
-              <Col lg={4} sm={8} xs={12}>
-                <div className="stat-card">
-                  <span className="stat-label">Rejected</span>
-                  <span className="stat-value danger">{stats.rejected}</span>
-                </div>
-              </Col>
+              {resultsMode === 'GENERATED' ? (
+                  <Col lg={6} sm={12} xs={24}>
+                    <div className="stat-card">
+                      <span className="stat-label">Already Applied</span>
+                      <span className="stat-value success">
+                        {stats.applied}
+                      </span>
+                    </div>
+                  </Col>
+              ) : (
+                <Col lg={6} sm={12} xs={24}>
+                  <div className="stat-card">
+                    <span className="stat-label">Rejected</span>
+                    <span className="stat-value warning">{stats.rejected}</span>
+                  </div>
+                </Col>
+              )}
             </Row>
 
-            <div className="main-content-card">
-              {/* Toolbar */}
-              <div className="toolbar-row">
-                <Space wrap size={12}>
-                  <Input.Search
-                    allowClear
-                    placeholder="Search rule or column..."
-                    style={{ width: 260 }}
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
-                  <Radio.Group
-                    buttonStyle="solid"
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                  >
-                    <Radio.Button value="ALL">
-                      All ({stats.total})
-                    </Radio.Button>
-                    <Radio.Button value="PENDING">
-                      Pending ({stats.pending})
-                    </Radio.Button>
-                    <Radio.Button value="ACCEPTED">
-                      Accepted ({stats.accepted})
-                    </Radio.Button>
-                    <Radio.Button value="APPLIED">
-                      Applied ({stats.applied})
-                    </Radio.Button>
-                    <Radio.Button value="REJECTED">
-                      Rejected ({stats.rejected})
-                    </Radio.Button>
-                  </Radio.Group>
-                  <Select
-                    getPopupContainer={(triggerNode) =>
-                      triggerNode.parentElement || document.body
-                    }
-                    options={[
-                      { value: 'ALL', label: 'All Scopes' },
-                      { value: 'column', label: 'Column Rules' },
-                      { value: 'table', label: 'Table Rules' },
-                    ]}
-                    style={{ width: 140 }}
-                    value={scopeFilter}
-                    onChange={setScopeFilter}
-                  />
-                  {ruleTables.length > 1 && (
+            <div className="ai-rule-workspace">
+              <RuleTargetTree
+                ruleCountByTable={ruleCountByTable}
+                selectedTableFqn={ruleTableFilter}
+                tableFqns={activeTableFqns}
+                title={
+                  resultsMode === 'GENERATED'
+                    ? 'Generated Targets'
+                    : 'Saved Rule Tables'
+                }
+                onSelect={(tableFqn) => {
+                  setRuleTableFilter(tableFqn);
+                  if (tableFqn !== 'ALL') {
+                    setSelectedTableFqn(tableFqn);
+                  }
+                }}
+              />
+              <div className="main-content-card ai-rule-results">
+                {/* Toolbar */}
+                <div className="toolbar-row">
+                  <Space wrap size={12}>
+                    <Input.Search
+                      allowClear
+                      placeholder="Search rule or column..."
+                      style={{ width: 260 }}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    <Radio.Group
+                      buttonStyle="solid"
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                    >
+                      <Radio.Button value="ALL">
+                        All ({stats.total})
+                      </Radio.Button>
+                      <Radio.Button value="PENDING">
+                        {resultsMode === 'SAVED' ? 'Draft' : 'Pending'} (
+                        {stats.pending})
+                      </Radio.Button>
+                      <Radio.Button value="ACCEPTED">
+                        Accepted ({stats.accepted})
+                      </Radio.Button>
+                      {resultsMode === 'GENERATED' && (
+                          <Radio.Button value="APPLIED">
+                            Applied ({stats.applied})
+                          </Radio.Button>
+                      )}
+                      <Radio.Button value="REJECTED">
+                        Rejected ({stats.rejected})
+                      </Radio.Button>
+                    </Radio.Group>
                     <Select
                       getPopupContainer={(triggerNode) =>
                         triggerNode.parentElement || document.body
                       }
                       options={[
-                        { value: 'ALL', label: 'Tất cả các bảng' },
-                        ...ruleTables.map((t) => ({
-                          value: t,
-                          label: `Bảng: ${t}`,
-                        })),
+                        { value: 'ALL', label: 'All Scopes' },
+                        { value: 'column', label: 'Column Rules' },
+                        { value: 'table', label: 'Table Rules' },
                       ]}
-                      style={{ minWidth: 160 }}
-                      value={ruleTableFilter}
-                      onChange={setRuleTableFilter}
+                      style={{ width: 140 }}
+                      value={scopeFilter}
+                      onChange={setScopeFilter}
                     />
-                  )}
-                </Space>
+                  </Space>
 
-                <Space>
-                  <Button
-                    disabled={stats.pending === 0}
-                    icon={<CheckOutlined />}
-                    onClick={handleAcceptAll}
-                  >
-                    Accept All Pending
-                  </Button>
-                  <Button
-                    icon={<ReloadOutlined />}
-                    onClick={async () => {
-                      const targets = selectedTableFqn
-                        ? [selectedTableFqn]
-                        : [];
-                      if (targets.length === 0) {
-                        return;
-                      }
-                      setLoading(true);
-                      try {
-                        const results = await Promise.all(
-                          targets.map((fqn) =>
-                            ruleRecommenderAPI.getRules(fqn)
-                          )
-                        );
-                        const flattened = results
-                          .flat()
-                          .filter(isRuleVisible);
-                        setRules(flattened);
-                      } finally {
-                        setLoading(false);
-                      }
-                    }}
-                  >
-                    Refresh
-                  </Button>
-                </Space>
+                  <Space>
+                    <Button
+                      disabled={stats.pending === 0}
+                      icon={<CheckOutlined />}
+                      onClick={handleAcceptAll}
+                    >
+                      Accept All Pending
+                    </Button>
+                    <Button
+                      icon={<ReloadOutlined />}
+                      onClick={async () => {
+                        setLoading(true);
+                        try {
+                          await loadSavedRules();
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                    >
+                      Refresh
+                    </Button>
+                  </Space>
+                </div>
+
+                {/* Table View */}
+                <Table
+                  columns={columns}
+                  dataSource={filteredRules}
+                  loading={loading}
+                  locale={{
+                    emptyText: (
+                      <Empty
+                        description={
+                          <span>
+                            No candidate rules found. Click{' '}
+                            <b>Generate Data Quality Rules</b> or choose another
+                            table.
+                          </span>
+                        }
+                      />
+                    ),
+                  }}
+                  pagination={{
+                    current: rulesCurrentPage,
+                    pageSize: rulesPageSize,
+                    total: filteredRules.length,
+                    showSizeChanger: true,
+                    pageSizeOptions: ['10', '20', '50'],
+                    showTotal: (total, range) =>
+                      `Showing ${range[0]} - ${range[1]} of ${total} rules`,
+                    showQuickJumper: true,
+                    onChange: (page, pageSize) => {
+                      setRulesCurrentPage(page);
+                      setRulesPageSize(pageSize);
+                    },
+                  }}
+                  rowKey="id"
+                  scroll={{ x: 'max-content' }}
+                />
               </div>
-
-              {/* Table View */}
-              <Table
-                columns={columns}
-                dataSource={filteredRules}
-                loading={loading}
-                locale={{
-                  emptyText: (
-                    <Empty
-                      description={
-                        <span>
-                          No candidate rules found. Click{' '}
-                          <b>Run AI Recommendation</b> to generate.
-                        </span>
-                      }
-                    />
-                  ),
-                }}
-                pagination={{
-                  current: rulesCurrentPage,
-                  pageSize: rulesPageSize,
-                  total: filteredRules.length,
-                  showSizeChanger: true,
-                  pageSizeOptions: ['10', '20', '50'],
-                  showTotal: (total, range) =>
-                    `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc`,
-                  showQuickJumper: true,
-                  onChange: (page, pageSize) => {
-                    setRulesCurrentPage(page);
-                    setRulesPageSize(pageSize);
-                  },
-                }}
-                rowKey="id"
-                scroll={{ x: 'max-content' }}
-              />
             </div>
           </>
         )}
 
         {/* ===================== TAB: NT GOVERNANCE ===================== */}
         {activeTab === 'nt-governance' && (
-          <div className="main-content-card">
-            <div style={{ padding: '16px 0' }}>
-              <Alert
-                showIcon
-                description={t('label.nt-governance-description')}
-                message={t('label.nt-governance-title')}
-                style={{ marginBottom: 16, borderRadius: 8 }}
-                type="info"
-              />
-              <Alert
-                showIcon
-                action={
+          <>
+            <BatchOperationsPanel
+              ntOnly
+              onNtComplete={async (tableFqns) => {
+                if (tableFqns.length === 0) {
+                  return;
+                }
+                if (tableFqns.includes(selectedTableFqn)) {
+                  await loadNtGovernanceStatus();
+                } else {
+                  setSelectedTableFqn(tableFqns[0]);
+                }
+              }}
+            />
+            <div className="main-content-card">
+              <div style={{ padding: '16px 0' }}>
+                <Alert
+                  showIcon
+                  description={t('label.nt-governance-description')}
+                  message={t('label.nt-governance-title')}
+                  style={{ marginBottom: 16, borderRadius: 8 }}
+                  type="info"
+                />
+                <div className="d-flex justify-end m-b-md">
                   <Button
                     icon={<DatabaseOutlined />}
                     loading={loadingTestCases}
@@ -1585,194 +1762,242 @@ export const RuleRecommenderPage = () => {
                   >
                     {t('label.view-existing-test-cases')}
                   </Button>
-                }
-                description="Use the Target Scope Builder above to preview and apply NT Governance to tables, schemas, or a database."
-                message="NT application is managed by server-side jobs"
-                style={{ marginBottom: 16 }}
-                type="success"
-              />
+                </div>
 
-              {ntStatusError && (
-                <Alert
-                  showIcon
-                  description={ntStatusError}
-                  message="Unable to load NT rule status"
-                  style={{ marginBottom: 16 }}
-                  type="error"
-                />
-              )}
-
-              <Card
-                className="nt-governance-card"
-                extra={
-                  ntStatus && (
-                    <Space size={6}>
-                      <Tag color="success">
-                        {ntStatus.applied_count} APPLIED
-                      </Tag>
-                      <Tag>{ntStatus.not_applied_count} NOT APPLIED</Tag>
-                    </Space>
-                  )
-                }
-                size="small"
-                title={t('label.available-nt-definitions')}
-              >
-                <Table
-                  columns={[
-                    {
-                      title: t('label.name'),
-                      dataIndex: 'displayName',
-                      key: 'displayName',
-                      width: 200,
-                      render: (value, record) => (
-                        <div>
-                          <Text strong>{value || record.name}</Text>
-                          {value && value !== record.name && (
-                            <div>
-                              <Text code type="secondary">
-                                {record.name}
-                              </Text>
-                            </div>
-                          )}
-                        </div>
-                      ),
-                    },
-                    {
-                      title: t('label.description'),
-                      dataIndex: 'description',
-                      key: 'description',
-                      ellipsis: true,
-                      width: 300,
-                    },
-                    {
-                      title: t('label.status'),
-                      dataIndex: 'status',
-                      key: 'status',
-                      width: 130,
-                      render: (status) =>
-                        status === 'APPLIED' ? (
-                          <Tag
-                            color="success"
-                            icon={<CheckCircleOutlined />}
-                          >
-                            APPLIED
-                          </Tag>
-                        ) : (
-                          <Tag>NOT APPLIED</Tag>
-                        ),
-                    },
-                    {
-                      title: t('label.action-plural'),
-                      key: 'actions',
-                      width: 80,
-                      render: (_, record) => (
-                        <Tooltip title="Configure NT rule">
-                          <Button
-                            aria-label={`Configure ${record.name}`}
-                            data-testid={`configure-nt-rule-${record.name}`}
-                            icon={<SettingOutlined />}
-                            loading={
-                              ntRuleConfigModal.loadingRuleName ===
-                              record.name
-                            }
-                            type="text"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              void ntRuleConfigModal.open(record.name);
-                            }}
-                          />
-                        </Tooltip>
-                      ),
-                    },
-                  ]}
-                  dataSource={ntDefinitions}
-                  loading={ntStatusLoading}
-                  locale={{
-                    emptyText: ntStatusError
-                      ? 'Status unavailable'
-                      : 'No NT definitions found',
-                  }}
-                  pagination={{
-                    current: ntCurrentPage,
-                    pageSize: ntPageSize,
-                    showSizeChanger: true,
-                    pageSizeOptions: ['10', '20', '50'],
-                    showTotal: (total, range) =>
-                      `Hiển thị ${range[0]} - ${range[1]} trên tổng số ${total} quy tắc NT`,
-                    onChange: (page, pageSize) => {
-                      setNtCurrentPage(page);
-                      setNtPageSize(pageSize);
-                    },
-                  }}
-                  rowKey="name"
-                  scroll={{ x: 'max-content' }}
-                  size="small"
-                />
-              </Card>
-
-              {existingTestCases.length > 0 && (
-                <Card
-                  className="nt-governance-card"
-                  size="small"
-                  style={{ marginTop: 16 }}
-                  title={t('label.existing-test-cases')}
-                >
-                  <Table
-                    columns={[
-                      {
-                        title: t('label.name'),
-                        dataIndex: 'name',
-                        key: 'name',
-                      },
-                      {
-                        title: t('label.test-definition'),
-                        dataIndex: 'testDefinition',
-                        key: 'testDefinition',
-                        render: (v) => <Tag color="geekblue">{v}</Tag>,
-                      },
-                      {
-                        title: t('label.description'),
-                        dataIndex: 'description',
-                        key: 'description',
-                      },
-                    ]}
-                    dataSource={existingTestCases.map((tc, idx) => {
-                      const item = tc as {
-                        name?: string;
-                        testDefinition?: string;
-                        description?: string;
-                      };
-
-                      return {
-                        key: idx,
-                        name: item.name,
-                        testDefinition: item.testDefinition,
-                        description: item.description,
-                      };
-                    })}
-                    pagination={{ pageSize: 5 }}
-                    size="small"
+                {ntStatusError && (
+                  <Alert
+                    showIcon
+                    description={ntStatusError}
+                    message="Unable to load NT rule status"
+                    style={{ marginBottom: 16 }}
+                    type="error"
                   />
-                </Card>
-              )}
+                )}
+
+                <div className="nt-governance-workspace">
+                  <Card
+                    className="nt-governance-card nt-rule-catalog"
+                    extra={
+                      ntStatus && (
+                        <Space size={6}>
+                          <Tag color="success">
+                            {ntStatus.applied_count} APPLIED
+                          </Tag>
+                          <Tag>{ntStatus.not_applied_count} NOT APPLIED</Tag>
+                        </Space>
+                      )
+                    }
+                    size="small"
+                    title={t('label.available-nt-definitions')}
+                  >
+                    <Input.Search
+                      allowClear
+                      className="nt-rule-search"
+                      placeholder="Search NT definitions..."
+                      value={ntSearchQuery}
+                      onChange={(event) => setNtSearchQuery(event.target.value)}
+                    />
+                    <Table
+                      columns={[
+                        {
+                          title: t('label.name'),
+                          dataIndex: 'displayName',
+                          key: 'displayName',
+                          width: 200,
+                          render: (value, record) => (
+                            <div>
+                              <Text strong>{value || record.name}</Text>
+                              {value && value !== record.name && (
+                                <div>
+                                  <Text code type="secondary">
+                                    {record.name}
+                                  </Text>
+                                </div>
+                              )}
+                            </div>
+                          ),
+                        },
+                        {
+                          title: t('label.description'),
+                          dataIndex: 'description',
+                          key: 'description',
+                          ellipsis: true,
+                          width: 300,
+                        },
+                        {
+                          title: t('label.status'),
+                          dataIndex: 'status',
+                          key: 'status',
+                          width: 130,
+                          render: (status) =>
+                            status === 'APPLIED' ? (
+                              <Tag
+                                color="success"
+                                icon={<CheckCircleOutlined />}
+                              >
+                                APPLIED
+                              </Tag>
+                            ) : (
+                              <Tag>NOT APPLIED</Tag>
+                            ),
+                        },
+                        {
+                          title: t('label.action-plural'),
+                          key: 'actions',
+                          width: 80,
+                          render: (_, record) => (
+                            <Tooltip title="Configure NT rule">
+                              <Button
+                                aria-label={`Configure ${record.name}`}
+                                data-testid={`configure-nt-rule-${record.name}`}
+                                icon={<SettingOutlined />}
+                                loading={
+                                  ntRuleConfigModal.loadingRuleName ===
+                                  record.name
+                                }
+                                type="text"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void ntRuleConfigModal.open(record.name);
+                                }}
+                              />
+                            </Tooltip>
+                          ),
+                        },
+                      ]}
+                      dataSource={filteredNtDefinitions}
+                      loading={ntStatusLoading}
+                      locale={{
+                        emptyText: ntStatusError
+                          ? 'Status unavailable'
+                          : 'No NT definitions found',
+                      }}
+                      pagination={{
+                        current: ntCurrentPage,
+                        pageSize: ntPageSize,
+                        showSizeChanger: true,
+                        pageSizeOptions: ['10', '20', '50'],
+                        showTotal: (total, range) =>
+                          `Showing ${range[0]} - ${range[1]} of ${total} NT rules`,
+                        onChange: (page, pageSize) => {
+                          setNtCurrentPage(page);
+                          setNtPageSize(pageSize);
+                        },
+                      }}
+                      rowClassName={(record) =>
+                        record.name === ntRuleConfigModal.selectedRule?.name
+                          ? 'nt-rule-row-selected'
+                          : ''
+                      }
+                      rowKey="name"
+                      scroll={{ x: 'max-content' }}
+                      size="small"
+                      onRow={(record) => ({
+                        onClick: () => void ntRuleConfigModal.open(record.name),
+                      })}
+                    />
+                  </Card>
+
+                  <Card
+                    className="nt-rule-configuration-panel"
+                    extra={
+                      ntRuleConfigModal.selectedRule ? (
+                        <Tag color="blue">
+                          {ntRuleConfigModal.selectedRule.name}
+                        </Tag>
+                      ) : null
+                    }
+                    size="small"
+                    title="Rule Configuration"
+                  >
+                    {ntRuleConfigModal.isLoading ? (
+                      <div className="nt-rule-config-loading">
+                        <Spin />
+                        <Text type="secondary">Loading configuration...</Text>
+                      </div>
+                    ) : ntRuleConfigModal.error ? (
+                      <Alert
+                        showIcon
+                        description={ntRuleConfigModal.error}
+                        message="Cannot load rule configuration"
+                        type="error"
+                      />
+                    ) : ntRuleConfigModal.selectedRule &&
+                      ntRuleConfigModal.config ? (
+                      <>
+                        <Typography.Title level={5}>
+                          {ntRuleConfigModal.selectedRule.display_name}
+                        </Typography.Title>
+                        <Paragraph type="secondary">
+                          Configure the parameters used by DQ Backend whenever
+                          this NT rule is executed.
+                        </Paragraph>
+                        <NTRuleConfigModal
+                          inline
+                          initialConfig={ntRuleConfigModal.config}
+                          isSaving={ntRuleConfigModal.isSaving}
+                          rule={ntRuleConfigModal.selectedRule}
+                          onCancel={ntRuleConfigModal.close}
+                          onReset={ntRuleConfigModal.reset}
+                          onSave={ntRuleConfigModal.save}
+                        />
+                      </>
+                    ) : (
+                      <Empty description="Select an NT definition to configure" />
+                    )}
+                  </Card>
+                </div>
+
+                {existingTestCases.length > 0 && (
+                  <Card
+                    className="nt-governance-card"
+                    size="small"
+                    style={{ marginTop: 16 }}
+                    title={t('label.existing-test-cases')}
+                  >
+                    <Table
+                      columns={[
+                        {
+                          title: t('label.name'),
+                          dataIndex: 'name',
+                          key: 'name',
+                        },
+                        {
+                          title: t('label.test-definition'),
+                          dataIndex: 'testDefinition',
+                          key: 'testDefinition',
+                          render: (v) => <Tag color="geekblue">{v}</Tag>,
+                        },
+                        {
+                          title: t('label.description'),
+                          dataIndex: 'description',
+                          key: 'description',
+                        },
+                      ]}
+                      dataSource={existingTestCases.map((tc, idx) => {
+                        const item = tc as {
+                          name?: string;
+                          testDefinition?: string;
+                          description?: string;
+                        };
+
+                        return {
+                          key: idx,
+                          name: item.name,
+                          testDefinition: item.testDefinition,
+                          description: item.description,
+                        };
+                      })}
+                      pagination={{ pageSize: 5 }}
+                      size="small"
+                    />
+                  </Card>
+                )}
+              </div>
             </div>
-          </div>
+          </>
         )}
-
-        {ntRuleConfigModal.isOpen &&
-          ntRuleConfigModal.selectedRule &&
-          ntRuleConfigModal.config && (
-            <NTRuleConfigModal
-              initialConfig={ntRuleConfigModal.config}
-              isSaving={ntRuleConfigModal.isSaving}
-              rule={ntRuleConfigModal.selectedRule}
-              onCancel={ntRuleConfigModal.close}
-              onReset={ntRuleConfigModal.reset}
-              onSave={ntRuleConfigModal.save}
-            />
-          )}
-
 
         {/* Edit Rule Modal */}
         <Modal
@@ -1784,6 +2009,7 @@ export const RuleRecommenderPage = () => {
             setIsEditModalOpen(false);
             setEditingRule(null);
             setDynamicParams([]);
+            setAllowedValueInputs([]);
           }}
           onOk={handleSaveEditedRule}
         >
@@ -1854,106 +2080,101 @@ export const RuleRecommenderPage = () => {
             )}
 
             {editingRule?.rule_type === 'columnValuesToBeInSet' && (
-              <Form.Item label="Allowed Values (comma-separated)">
-                <Input.TextArea
-                  placeholder="value1, value2, value3"
-                  rows={2}
-                />
+              <Form.Item
+                required
+                extra="Each input represents one allowed value."
+                label="Allowed Values"
+              >
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {allowedValueInputs.map((value, index) => (
+                    <Space.Compact block key={index}>
+                      <Input
+                        placeholder={`Allowed value ${index + 1}`}
+                        value={value}
+                        onChange={(event) =>
+                          handleUpdateAllowedValue(index, event.target.value)
+                        }
+                      />
+                      <Button
+                        danger
+                        aria-label={`Remove allowed value ${index + 1}`}
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleRemoveAllowedValue(index)}
+                      />
+                    </Space.Compact>
+                  ))}
+                  <Button
+                    block
+                    icon={<PlusOutlined />}
+                    type="dashed"
+                    onClick={handleAddAllowedValue}
+                  >
+                    Add value
+                  </Button>
+                </Space>
               </Form.Item>
             )}
 
             {/* Dynamic Parameters Section */}
-            <div className="dynamic-params-section">
-              <div className="dynamic-params-header">
-                <Text strong>Parameters</Text>
-                <Button
-                  icon={<PlusOutlined />}
-                  size="small"
-                  type="dashed"
-                  onClick={handleAddParam}
-                >
-                  Add Parameter
-                </Button>
-              </div>
-
-              {dynamicParams.length === 0 ? (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  No parameters. Click "Add Parameter" to add key-value pairs.
-                </Text>
-              ) : (
-                <div className="dynamic-params-list">
-                  {dynamicParams.map((param, index) => (
-                    <Row key={index} gutter={8} style={{ marginBottom: 8 }}>
-                      <Col span={8}>
-                        <Input
-                          placeholder="key"
-                          value={param.key}
-                          onChange={(e) =>
-                            handleUpdateParam(index, 'key', e.target.value)
-                          }
-                        />
-                      </Col>
-                      <Col span={14}>
-                        <Input
-                          placeholder="value"
-                          value={param.value}
-                          onChange={(e) =>
-                            handleUpdateParam(index, 'value', e.target.value)
-                          }
-                        />
-                      </Col>
-                      <Col span={2}>
-                        <Button
-                          danger
-                          icon={<DeleteOutlined />}
-                          size="small"
-                          type="text"
-                          onClick={() => handleRemoveParam(index)}
-                        />
-                      </Col>
-                    </Row>
-                  ))}
+            {editingRule?.engine !== 'ADVANCED' &&
+              editingRule?.rule_type !== 'columnValuesToBeInSet' && (
+              <div className="dynamic-params-section">
+                <div className="dynamic-params-header">
+                  <Text strong>Parameters</Text>
+                  <Button
+                    icon={<PlusOutlined />}
+                    size="small"
+                    type="dashed"
+                    onClick={handleAddParam}
+                  >
+                    Add Parameter
+                  </Button>
                 </div>
-              )}
-            </div>
+
+                {dynamicParams.length === 0 ? (
+                  <Text style={{ fontSize: 12 }} type="secondary">
+                    No parameters. Click "Add Parameter" to add key-value pairs.
+                  </Text>
+                ) : (
+                  <div className="dynamic-params-list">
+                    {dynamicParams.map((param, index) => (
+                      <Row gutter={8} key={index} style={{ marginBottom: 8 }}>
+                        <Col span={8}>
+                          <Input
+                            placeholder="key"
+                            value={param.key}
+                            onChange={(e) =>
+                              handleUpdateParam(index, 'key', e.target.value)
+                            }
+                          />
+                        </Col>
+                        <Col span={14}>
+                          <Input
+                            placeholder="value"
+                            value={param.value}
+                            onChange={(e) =>
+                              handleUpdateParam(index, 'value', e.target.value)
+                            }
+                          />
+                        </Col>
+                        <Col span={2}>
+                          <Button
+                            danger
+                            icon={<DeleteOutlined />}
+                            size="small"
+                            type="text"
+                            onClick={() => handleRemoveParam(index)}
+                          />
+                        </Col>
+                      </Row>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </Form>
         </Modal>
 
-        {/* Config API Base URL Modal */}
-        <Modal
-          open={isConfigModalOpen}
-          title="Rule Recommender API Settings"
-          onCancel={() => setIsConfigModalOpen(false)}
-          onOk={() => {
-            setRecommenderBaseUrl(customApiUrl);
-            setIsConfigModalOpen(false);
-            ruleRecommenderAPI.checkHealth().then(setBackendHealth);
-            notification.success({
-              message: 'Settings Updated',
-              description: `API Base URL set to ${customApiUrl}`,
-            });
-          }}
-        >
-          <p>
-            Configure the FastAPI Rule Recommender backend endpoint. Defaults to{' '}
-            <code>http://localhost:8000/api/v1</code>.
-          </p>
-          <Input
-            placeholder="http://localhost:8000/api/v1"
-            value={customApiUrl}
-            onChange={(e) => setCustomApiUrl(e.target.value)}
-          />
-          <div style={{ marginTop: 12 }}>
-            <Button
-              size="small"
-              onClick={() => {
-                setCustomApiUrl('http://localhost:8000/api/v1');
-              }}
-            >
-              Reset to Default (localhost:8000)
-            </Button>
-          </div>
-        </Modal>
       </div>
     </PageLayoutV1>
   );

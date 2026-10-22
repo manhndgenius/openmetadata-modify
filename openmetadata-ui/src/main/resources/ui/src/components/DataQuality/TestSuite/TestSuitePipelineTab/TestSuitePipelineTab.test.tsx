@@ -21,6 +21,7 @@ import {
   getIngestionPipelines,
   triggerIngestionPipelineById,
 } from '../../../../rest/ingestionPipelineAPI';
+import { ruleRecommenderAPI } from '../../../../services/ruleRecommenderAPI';
 import TestSuitePipelineTab from './TestSuitePipelineTab.component';
 
 const mockTestSuite = {
@@ -105,6 +106,15 @@ jest.mock('../../../../rest/ingestionPipelineAPI', () => {
     triggerIngestionPipelineById: jest.fn().mockResolvedValue({}),
   };
 });
+
+jest.mock('../../../../services/ruleRecommenderAPI', () => ({
+  ruleRecommenderAPI: {
+    startNtRun: jest.fn().mockResolvedValue({
+      run_id: 'nt-run-1',
+      status: 'PENDING',
+    }),
+  },
+}));
 
 jest.mock('../../../../utils/ToastUtils', () => ({
   showErrorToast: jest.fn(),
@@ -383,7 +393,7 @@ describe('TestSuite Pipeline component', () => {
     expect(screen.getByTestId('mui-helper-icon')).toBeInTheDocument();
   });
 
-  it('triggers the Airflow pipeline for a table suite when Run is clicked', async () => {
+  it('triggers the Airflow pipeline and NT validation for a table suite', async () => {
     await act(async () => {
       render(<TestSuitePipelineTab testSuite={mockTestSuite} />);
     });
@@ -392,6 +402,10 @@ describe('TestSuite Pipeline component', () => {
 
     await waitFor(() => {
       expect(triggerIngestionPipelineById).toHaveBeenCalledWith('1');
+      expect(ruleRecommenderAPI.startNtRun).toHaveBeenCalledWith(
+        'mySQL.openmetadata_db.openmetadata_db.web_analytic_event',
+        '1'
+      );
     });
   });
 });

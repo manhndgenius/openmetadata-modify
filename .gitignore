@@ -200,6 +200,9 @@ ingestion/.claude/agents
 
 test-results/
 
+# Locally exported deployment images
+/openmetadata-dq-*.tar
+
 # Test, benchmark & evaluation documents (kept locally, not committed)
 docs/BAO_CAO_CHI_TIET_DANH_GIA_CHI_SO.md
 docs/BAO_CAO_CHI_TIET_TEST_CHUC_NANG.md

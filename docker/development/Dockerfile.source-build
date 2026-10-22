@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1.7
+
+FROM maven:3.9.9-eclipse-temurin-21 AS package
+
+WORKDIR /workspace
+
+# Keep the combined Maven + Vite build below Docker Desktop's memory limit.
+# Tests are not compiled for the runtime image, and Vite gets a bounded heap.
+ENV MAVEN_OPTS="-Xmx1536m -XX:MaxMetaspaceSize=512m" \
+    NODE_OPTIONS="--max-old-space-size=4096"
+
+# The UI's build-check script invokes the ANTLR CLI directly. Keep the CLI
+# version aligned with the root Maven antlr.version property.
+RUN curl -fsSL https://www.antlr.org/download/antlr-4.13.2-complete.jar \
+      -o /opt/antlr-4.13.2-complete.jar \
+    && printf '#!/bin/sh\nexec java -jar /opt/antlr-4.13.2-complete.jar "$@"\n' \
+      > /usr/local/bin/antlr4 \
+    && chmod 755 /usr/local/bin/antlr4
+
+COPY . .
+
+# buildnumber-maven-plugin expects an SCM revision. The real .git directory is
+# excluded from the Docker context, so create a tiny build-only repository.
+RUN git init \
+    && git config user.email "docker-build@localhost" \
+    && git config user.name "Docker Build" \
+    && git commit --allow-empty -m "docker source build"
+
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -DskipTests -Dmaven.test.skip=true clean package
+
+FROM alpine:3 AS distribution
+
+RUN mkdir -p /opt/openmetadata
+COPY --from=package /workspace/openmetadata-dist/target/openmetadata-*.tar.gz /tmp/
+RUN tar zxvf /tmp/openmetadata-*.tar.gz -C /opt/openmetadata --strip-components 1 \
+    && rm /tmp/openmetadata-*.tar.gz \
+    && find /opt/openmetadata -type f -name '*.sh' \
+       -exec sed -i 's/\r$//' {} +
+
+FROM alpine:3
+
+EXPOSE 8585
+
+RUN adduser -D openmetadata \
+    && apk update \
+    && apk upgrade \
+    && apk add --update --no-cache bash openjdk21-jre
+
+COPY --chown=openmetadata:openmetadata --from=distribution /opt/openmetadata /opt/openmetadata
+COPY --chmod=755 docker/openmetadata-start.sh /
+RUN sed -i 's/\r$//' /openmetadata-start.sh
+
+USER openmetadata
+WORKDIR /opt/openmetadata
+ENTRYPOINT ["/bin/bash"]
+CMD ["/openmetadata-start.sh"]
